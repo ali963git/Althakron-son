@@ -12,6 +12,58 @@ export interface AzkarCategory {
   items: ZikrItem[];
 }
 
+export interface AudioZikrItem {
+  id: string;
+  title: string;
+  audioUrl: string;
+  reader: string;
+  duration: string;
+  category: string;
+}
+
+export const AUDIO_AZKAR_DATA: AudioZikrItem[] = [
+  {
+    id: 'audio-morning',
+    title: 'أذكار الصباح',
+    audioUrl: 'https://download.tvquran.com/download/Azkar/Morning/Alafasy.mp3',
+    reader: 'مشاري راشد العفاسي',
+    duration: '15:20',
+    category: 'صباح'
+  },
+  {
+    id: 'audio-evening',
+    title: 'أذكار المساء',
+    audioUrl: 'https://download.tvquran.com/download/Azkar/Evening/Alafasy.mp3',
+    reader: 'مشاري راشد العفاسي',
+    duration: '17:45',
+    category: 'مساء'
+  },
+  {
+    id: 'audio-sleep',
+    title: 'أذكار النوم',
+    audioUrl: 'https://download.tvquran.com/download/Azkar/Sleep/Alafasy.mp3',
+    reader: 'مشاري راشد العفاسي',
+    duration: '12:10',
+    category: 'نوم'
+  },
+  {
+    id: 'audio-waking',
+    title: 'أذكار الاستيقاظ',
+    audioUrl: 'https://download.tvquran.com/download/Azkar/Waking/Alafasy.mp3',
+    reader: 'مشاري راشد العفاسي',
+    duration: '03:30',
+    category: 'استيقاظ'
+  },
+  {
+    id: 'audio-ruqyah',
+    title: 'الرقية الشرعية',
+    audioUrl: 'https://server8.mp3quran.net/afs/115.mp3',
+    reader: 'مشاري راشد العفاسي',
+    duration: '22:00',
+    category: 'رقية'
+  }
+];
+
 export const AZKAR_DATA: AzkarCategory[] = [
   {
     id: 'صباح',

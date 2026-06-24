@@ -36,15 +36,28 @@ import {
   Bell,
   Calendar,
   History,
-  Quote
+  Quote,
+  Home,
+  Book,
+  Wind,
+  MessageCircle,
+  Scroll,
+  Hash,
+  X
 } from 'lucide-react';
 import { SURAHS, Surah } from './data/surahs';
-import { AZKAR_DATA, PRESETS_DHIKR, ZikrItem, AzkarCategory } from './data/azkar';
+import { AZKAR_DATA, PRESETS_DHIKR, ZikrItem, AzkarCategory, AudioZikrItem, AUDIO_AZKAR_DATA } from './data/azkar';
+import { HISN_AL_MUSLIM, HisnDhikr } from './data/hisn';
 import { SUNNAH_DUAS, DuaItem } from './data/duas';
 import { SURAH_START_PAGES, getJuzForPage, getSurahForPage } from './data/surahPages';
 import { HIJRI_MONTHS, ISLAMIC_EVENTS, IslamicEvent } from './data/islamicEvents';
 import { CURATED_HADEETHS, Hadeeth } from './data/hadeethOfTheDay';
 import { AnimatePresence, motion } from 'motion/react';
+import { useAuth } from './AuthProvider';
+import { useTranslation } from 'react-i18next';
+import { db } from './firebase';
+import { doc, setDoc, getDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+import { ShareAyahModal } from './components/ShareAyahModal';
 
 // Kaaba Coordinates for Qibla calculation
 const KAABA_LAT = 21.4225;
@@ -89,12 +102,73 @@ const RECITERS: Reciter[] = [
 ];
 
 export default function App() {
+  const { user, loginWithGoogle, logout } = useAuth();
+  const { t, i18n } = useTranslation();
+
+  // Sync user profile
+  useEffect(() => {
+    document.documentElement.dir = i18n.language === 'ar' ? 'rtl' : 'ltr';
+    document.documentElement.lang = i18n.language;
+  }, [i18n.language]);
+
+  useEffect(() => {
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      
+      getDoc(userRef).then(docSnap => {
+        if (!docSnap.exists()) {
+          setDoc(userRef, {
+            email: user.email || '',
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            prayerAlertsEnabled: false,
+            totalTasbihCount: 0
+          }).catch(err => {
+            if (err.code !== 'unavailable') {
+              console.error("Error creating user", err);
+            }
+          });
+        } else {
+          setDoc(userRef, {
+            email: user.email || '',
+            updatedAt: serverTimestamp(),
+          }, { merge: true }).catch(err => {
+            if (err.code !== 'unavailable') {
+              console.error("Error updating user", err);
+            }
+          });
+
+          const data = docSnap.data();
+          if (data.prayerAlertsEnabled !== undefined) {
+            setPrayerAlertsEnabled(data.prayerAlertsEnabled);
+            localStorage.setItem('prayerAlertsEnabled', String(data.prayerAlertsEnabled));
+          }
+        }
+      }).catch(err => {
+        // If we are offline, it's expected that getDoc might fail or time out
+        // We handle it silently if it's a network/availability error
+        if (err.code !== 'unavailable') {
+          console.error("Error fetching user for sync", err);
+        } else {
+          console.log("App is operating in offline mode. User sync will resume when online.");
+        }
+      });
+    }
+  }, [user]);
+
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<string>('home');
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [toastText, setToastText] = useState<string>('');
   const [showToast, setShowToast] = useState<boolean>(false);
-  
+  const [currentSystemTime, setCurrentSystemTime] = useState(new Date());
+
+  // 1. Time Update Interval
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentSystemTime(new Date()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Custom owner / personalization state (shared link feature)
   const [ownerName, setOwnerName] = useState<string>('علي');
   const [hasOwner, setHasOwner] = useState<boolean>(false);
@@ -112,6 +186,49 @@ export default function App() {
     isha: '21:15'
   });
   const [qiblaAngle, setQiblaAngle] = useState<number>(185.3);
+
+  const currentTheme = React.useMemo(() => {
+    const h = currentSystemTime.getHours();
+    const m = currentSystemTime.getMinutes();
+    const nowMins = h * 60 + m;
+
+    const getMins = (timeStr: string) => {
+      if (!timeStr) return 0;
+      const [sh, sm] = timeStr.split(':').map(Number);
+      return sh * 60 + sm;
+    };
+
+    const fajrMins = getMins(prayerTimes.fajr);
+    const sunriseMins = getMins(prayerTimes.sunrise);
+    const dhuhrMins = getMins(prayerTimes.dhuhr);
+    const asrMins = getMins(prayerTimes.asr);
+    const maghribMins = getMins(prayerTimes.maghrib);
+    const ishaMins = getMins(prayerTimes.isha);
+
+    if (nowMins >= fajrMins && nowMins < sunriseMins) return 'fajr';
+    if (nowMins >= sunriseMins && nowMins < dhuhrMins) return 'morning';
+    if (nowMins >= dhuhrMins && nowMins < asrMins) return 'noon';
+    if (nowMins >= asrMins && nowMins < maghribMins) return 'afternoon';
+    if (nowMins >= maghribMins && nowMins < ishaMins) return 'sunset';
+    return 'night';
+  }, [currentSystemTime, prayerTimes]);
+
+  const themeStyles = React.useMemo(() => {
+    switch (currentTheme) {
+      case 'fajr':
+        return 'from-[#02130F] via-[#052920] to-[#0D3D32]';
+      case 'morning':
+        return 'from-[#02130F] via-[#084033] to-[#126B57]';
+      case 'noon':
+        return 'from-[#02130F] via-[#063328] to-[#1A5C4D]';
+      case 'afternoon':
+        return 'from-[#02130F] via-[#1A332B] to-[#4D4012]';
+      case 'sunset':
+        return 'from-[#02130F] via-[#2E1224] to-[#4D121E]';
+      default:
+        return 'from-[#010B08] via-[#02130F] to-[#042019]';
+    }
+  }, [currentTheme]);
 
   // Qibla Finder live orientation and simulation states
   const [deviceHeading, setDeviceHeading] = useState<number | null>(null);
@@ -198,6 +315,9 @@ export default function App() {
 
   // Quran Reader professional states
   const [quranMode, setQuranMode] = useState<'read' | 'listen'>('read');
+  const [listenSubTab, setListenSubTab] = useState<'surahs' | 'history'>('surahs');
+  const [listeningHistory, setListeningHistory] = useState<any[]>([]);
+  const [isShareAyahModalOpen, setIsShareAyahModalOpen] = useState(false);
   const [quranPage, setQuranPage] = useState<number>(() => {
     const saved = localStorage.getItem('quranReadingPage');
     return saved ? Math.min(604, Math.max(1, Number(saved))) : 1;
@@ -219,6 +339,10 @@ export default function App() {
   // Quran Tab state
   const [selectedReciter, setSelectedReciter] = useState<Reciter>(RECITERS[0]);
   const [quranSearchQuery, setQuranSearchQuery] = useState<string>('');
+  const [hisnSearchQuery, setHisnSearchQuery] = useState<string>('');
+  const [activeHisnCategory, setActiveHisnCategory] = useState<string | null>(null);
+  const [activeHisnTag, setActiveHisnTag] = useState<string | null>(null);
+  const [selectedHisnDhikr, setSelectedHisnDhikr] = useState<HisnDhikr | null>(null);
   const [currentPlayingSurah, setCurrentPlayingSurah] = useState<Surah | null>(null);
 
   // Custom audio player state
@@ -233,6 +357,9 @@ export default function App() {
   const [activeAzkarCategory, setActiveAzkarCategory] = useState<'صباح' | 'مساء' | 'نوم' | 'صلاة' | 'favorites'>('صباح');
   const [azkarDataState, setAzkarDataState] = useState<AzkarCategory[]>([]);
   const [favoriteAzkarIds, setFavoriteAzkarIds] = useState<string[]>([]);
+  const [azkarMode, setAzkarMode] = useState<'text' | 'audio'>('text');
+  const [currentAudioAdhkar, setCurrentAudioAdhkar] = useState<AudioZikrItem | null>(null);
+  const [isAudioLoop, setIsAudioLoop] = useState<boolean>(false);
 
   // Tasbih state
   const [activeDhikrPreset, setActiveDhikrPreset] = useState(PRESETS_DHIKR[0]);
@@ -385,6 +512,22 @@ export default function App() {
     computePrayerTimes(latitude, longitude);
   }, [latitude, longitude]);
 
+  // Fetch Listening History
+  useEffect(() => {
+    if (user && activeTab === 'quran' && quranMode === 'listen' && listenSubTab === 'history') {
+      // Fetch from Firestore
+      const q = query(collection(db, 'users', user.uid, 'listeningHistory'), orderBy('lastListenedAt', 'desc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const history: any[] = [];
+        snapshot.forEach((doc) => {
+          history.push({ id: doc.id, ...doc.data() });
+        });
+        setListeningHistory(history);
+      });
+      return () => unsubscribe();
+    }
+  }, [user, activeTab, quranMode, listenSubTab]);
+
   // Keyboard Arrow navigation for Quran pages (RTL: Left arrow -> Next, Right arrow -> Prev)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -498,6 +641,7 @@ export default function App() {
   };
 
   const togglePrayerAlerts = async () => {
+    let newState = !prayerAlertsEnabled;
     if (!prayerAlertsEnabled) {
       if ('Notification' in window) {
         try {
@@ -526,10 +670,22 @@ export default function App() {
       localStorage.setItem('prayerAlertsEnabled', 'false');
       triggerToast('تم إيقاف تفعيل تنبيهات الصلوات.');
     }
+    
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(userRef, {
+        prayerAlertsEnabled: newState,
+        updatedAt: serverTimestamp()
+      }, { merge: true }).catch(err => {
+        if (err.code !== 'unavailable') {
+          console.error("Error updating prayerAlertsEnabled", err);
+        }
+      });
+    }
   };
 
   const triggerPrayerNotification = (prayerName: string, message: string, key: string) => {
-    // 1. Play synthesized chime
+    // 1. Play default synthesized chime
     playGentleChime();
 
     // 2. Browser standard notification if granted
@@ -714,9 +870,36 @@ export default function App() {
     };
 
     const handleEnded = () => {
+      if (currentAudioAdhkar && isAudioLoop && audio) {
+        audio.currentTime = 0;
+        audio.play().catch(e => console.warn("Loop play error:", e));
+        setIsPlaying(true);
+        return;
+      }
       setIsPlaying(false);
       setCurrentTime(0);
-      triggerToast('تم الانتهاء من تلاوة السورة المباركة بحمد الله');
+      if (currentPlayingSurah) {
+        triggerToast('تم الانتهاء من تلاوة السورة المباركة بحمد الله');
+      } else if (currentAudioAdhkar) {
+        triggerToast('تم الانتهاء من الاستماع للأذكار المباركة بحمد الله');
+      }
+    };
+
+    const handlePause = () => {
+       setIsPlaying(false);
+       // Save to Firestore
+       if (user && currentPlayingSurah && audioRef.current) {
+          const historyRef = doc(collection(db, 'users', user.uid, 'listeningHistory'), String(currentPlayingSurah.id));
+          setDoc(historyRef, {
+            surahId: currentPlayingSurah.id,
+            lastPosition: audioRef.current.currentTime,
+            lastListenedAt: serverTimestamp()
+          }, { merge: true }).catch(err => {
+            if (err.code !== 'unavailable') {
+              console.error("Error saving listening history", err);
+            }
+          });
+       }
     };
 
     const handleAudioError = (e: Event) => {
@@ -728,15 +911,17 @@ export default function App() {
     audio.addEventListener('timeupdate', handleTimeUpdate);
     audio.addEventListener('durationchange', handleDurationChange);
     audio.addEventListener('ended', handleEnded);
+    audio.addEventListener('pause', handlePause);
     audio.addEventListener('error', handleAudioError);
 
     return () => {
       audio.removeEventListener('timeupdate', handleTimeUpdate);
       audio.removeEventListener('durationchange', handleDurationChange);
       audio.removeEventListener('ended', handleEnded);
+      audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('error', handleAudioError);
     };
-  }, []);
+  }, [user, currentPlayingSurah, currentAudioAdhkar, isAudioLoop]);
 
   // Sync volume & mute
   useEffect(() => {
@@ -746,7 +931,7 @@ export default function App() {
   }, [volume, isMuted]);
 
   const togglePlay = () => {
-    if (!audioRef.current || !currentPlayingSurah) return;
+    if (!audioRef.current || (!currentPlayingSurah && !currentAudioAdhkar)) return;
     if (isPlaying) {
       audioRef.current.pause();
       setIsPlaying(false);
@@ -760,8 +945,30 @@ export default function App() {
     }
   };
 
-  const playSurah = (surah: Surah) => {
+  const playAudioAdhkar = (adhkar: AudioZikrItem) => {
     if (!audioRef.current) return;
+    
+    audioRef.current.src = adhkar.audioUrl;
+    audioRef.current.load();
+    
+    setCurrentAudioAdhkar(adhkar);
+    setCurrentPlayingSurah(null); // Stop surah if any
+    setIsPlaying(true);
+    
+    audioRef.current.play().then(() => {
+        setIsPlaying(true);
+        triggerToast(`جاري تشغيل ${adhkar.title} بصوت ${adhkar.reader} 🎧✨`);
+    }).catch(e => {
+        console.warn("Audio play error:", e);
+        setIsPlaying(false);
+    });
+  };
+
+  const playSurah = async (surah: Surah) => {
+    if (!audioRef.current) return;
+    
+    // Stop any audio adhkar
+    setCurrentAudioAdhkar(null);
     
     // Construct full URL
     // e.g., https://server8.mp3quran.net/afs/001.mp3
@@ -769,6 +976,21 @@ export default function App() {
     
     audioRef.current.src = audioUrl;
     audioRef.current.load();
+    
+    // Check for last position
+    if (user) {
+      try {
+        const historyDoc = await getDoc(doc(db, 'users', user.uid, 'listeningHistory', String(surah.id)));
+        if (historyDoc.exists()) {
+          audioRef.current.currentTime = historyDoc.data().lastPosition || 0;
+        }
+      } catch (err: any) {
+        if (err.code !== 'unavailable') {
+          console.error("Error fetching listening history", err);
+        }
+      }
+    }
+
     setCurrentPlayingSurah(surah);
     setIsPlaying(true);
     
@@ -1423,8 +1645,31 @@ ${dua.reference}
   );
 
   return (
-    <div className="bg-[#02130F] text-[#E6DFD3] font-cairo antialiased min-h-screen flex flex-col justify-between">
+    <div className="relative text-[#E6DFD3] font-cairo antialiased min-h-screen flex flex-col justify-between overflow-x-hidden">
       
+      {/* Dynamic Animated Background Layer */}
+      <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
+        <AnimatePresence mode="wait">
+          <motion.div 
+            key={currentTheme}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 2 }}
+            className={`absolute inset-0 bg-gradient-to-br ${themeStyles}`}
+          />
+        </AnimatePresence>
+        
+        {/* Subtle Overlay Pattern */}
+        <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M30 30L15 0h30L30 30zM0 30l30-15v30L0 30zM60 30L30 45v-30l30 15zM30 60l15-30h-30L30 60z' fill='%23D4AF37' fill-opacity='1' fill-rule='evenodd'/%3E%3C/svg%3E")` }}></div>
+        
+        {/* Floating Light Blobs for extra "Magic" */}
+        <div className="absolute top-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#D4AF37]/5 blur-[120px] animate-pulse"></div>
+        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-teal-500/5 blur-[100px] animate-pulse" style={{ animationDelay: '2s' }}></div>
+      </div>
+      
+      <ShareAyahModal isOpen={isShareAyahModalOpen} onClose={() => setIsShareAyahModalOpen(false)} />
+
       {/* 1. TOAST COMPONENT */}
       <div 
         id="toast" 
@@ -1445,7 +1690,7 @@ ${dua.reference}
       )}
 
       {/* 3. APP HEADER */}
-      <header className="sticky top-0 z-40 bg-[#02130F]/95 backdrop-blur-md border-b border-[#D4AF37]/15">
+      <header className="sticky top-0 z-40 bg-transparent backdrop-blur-md border-b border-[#D4AF37]/15">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-24 flex items-center justify-between">
           
           {/* Logo */}
@@ -1467,91 +1712,73 @@ ${dua.reference}
           </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden xl:flex items-center gap-1">
-            <button 
-              onClick={() => setActiveTab('home')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'home' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              الرئيسية
-            </button>
-            <button 
-              onClick={() => setActiveTab('quran')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'quran' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              القرآن الكريم
-            </button>
-            <button 
-              onClick={() => setActiveTab('azkar')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'azkar' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              📿 أذكار المسلم
-            </button>
-            <button 
-              onClick={() => setActiveTab('dua')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'dua' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              🤲 دعاء اليوم
-            </button>
-            <button 
-              onClick={() => setActiveTab('hadeeth')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'hadeeth' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              📜 الحديث الشريف
-            </button>
-            <button 
-              onClick={() => setActiveTab('history')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'history' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              🗓️ التاريخ الإسلامي
-            </button>
-            <button 
-              onClick={() => setActiveTab('tasbih')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'tasbih' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              المسبحة الإلكترونية
-            </button>
-            <button 
-              onClick={() => setActiveTab('ai')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'ai' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              ✨ التدبر والذكر الذكي
-            </button>
-            <button 
-              onClick={() => setActiveTab('zakat')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'zakat' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              💰 حاسبة الزكاة
-            </button>
-            <button 
-              onClick={() => setActiveTab('publish')} 
-              className={`px-4 py-2 rounded-full text-xs font-bold transition-all ${
-                activeTab === 'publish' ? 'text-[#02130F] bg-[#D4AF37] shadow-md shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
-              }`}
-            >
-              انشر واكسب الأجر
-            </button>
+          <nav className="hidden xl:flex items-center gap-1 bg-[#011B12]/40 backdrop-blur-sm p-1.5 rounded-full border border-[#D4AF37]/10">
+            {[
+              { id: 'home', label: t('nav.home'), icon: Home },
+              { id: 'quran', label: t('nav.quran'), icon: Book },
+              { id: 'hisn', label: t('nav.hisn'), icon: Scroll },
+              { id: 'azkar', label: t('nav.azkar'), icon: Wind },
+              { id: 'dua', label: t('nav.dua'), icon: MessageCircle },
+              { id: 'hadeeth', label: t('nav.hadeeth'), icon: Scroll },
+              { id: 'history', label: i18n.language === 'ar' ? 'التاريخ' : 'History', icon: Calendar },
+              { id: 'tasbih', label: i18n.language === 'ar' ? 'المسبحة' : 'Tasbih', icon: Hash },
+              { id: 'ai', label: i18n.language === 'ar' ? 'التدبر' : 'Reflection', icon: Sparkles },
+              { id: 'zakat', label: i18n.language === 'ar' ? 'الزكاة' : 'Zakat', icon: Calculator },
+              { id: 'publish', label: i18n.language === 'ar' ? 'النشر' : 'Publish', icon: Share2 }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative px-4 py-2.5 rounded-full text-xs font-bold transition-all duration-300 flex items-center gap-2 group cursor-pointer ${
+                    isActive ? 'text-[#02130F] bg-gradient-to-r from-[#D4AF37] to-[#FFF2B2] shadow-lg shadow-[#D4AF37]/20' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
+                  }`}
+                >
+                  <Icon className={`w-3.5 h-3.5 transition-transform duration-300 ${isActive ? 'scale-110' : 'group-hover:scale-110'}`} />
+                  <span className="relative z-10">{tab.label}</span>
+                </button>
+              );
+            })}
           </nav>
 
           {/* Quick status */}
           <div className="hidden lg:flex items-center gap-3">
+            {/* Language Switcher */}
+            <div className="flex items-center bg-[#011B12]/40 border border-[#D4AF37]/10 rounded-lg p-1">
+              <button 
+                onClick={() => i18n.changeLanguage('ar')}
+                className={`px-2 py-1 text-[10px] font-black rounded-md transition-all ${i18n.language === 'ar' ? 'bg-[#D4AF37] text-[#02130F]' : 'text-gray-400 hover:text-[#FAF6EE]'}`}
+              >
+                AR
+              </button>
+              <button 
+                onClick={() => i18n.changeLanguage('en')}
+                className={`px-2 py-1 text-[10px] font-black rounded-md transition-all ${i18n.language === 'en' ? 'bg-[#D4AF37] text-[#02130F]' : 'text-gray-400 hover:text-[#FAF6EE]'}`}
+              >
+                EN
+              </button>
+            </div>
+
+            {user ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-300">مرحباً، {user.displayName}</span>
+                <button 
+                  onClick={logout}
+                  className="px-3 py-1.5 text-xs font-bold rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-all"
+                >
+                  تسجيل الخروج
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={loginWithGoogle}
+                className="px-3 py-1.5 text-xs font-bold rounded-lg bg-[#D4AF37]/10 text-[#D4AF37] border border-[#D4AF37]/20 hover:bg-[#D4AF37]/20 transition-all"
+              >
+                تسجيل الدخول
+              </button>
+            )}
             <div className="flex items-center gap-1.5 text-[10px] bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1.5 rounded-full text-emerald-400 font-bold">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
               <span>مستقر ونشط الآن للجميع</span>
@@ -1573,90 +1800,75 @@ ${dua.reference}
       </header>
 
       {/* 4. MOBILE NAVIGATION DROPDOWN */}
-      {mobileMenuOpen && (
-        <div className="xl:hidden fixed inset-x-0 top-24 z-30 bg-[#02130F]/98 backdrop-blur-xl border-b border-[#D4AF37]/20 p-6 flex flex-col gap-2">
-          <button 
-            onClick={() => { setActiveTab('home'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'home' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <motion.div 
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
+            className="xl:hidden fixed inset-x-0 top-24 z-30 bg-[#02130F]/98 backdrop-blur-xl border-b border-[#D4AF37]/20 p-6 flex flex-col gap-2 shadow-2xl overflow-y-auto max-h-[calc(100vh-6rem)]"
           >
-            الرئيسية
-          </button>
-          <button 
-            onClick={() => { setActiveTab('quran'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'quran' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            القرآن الكريم كامل
-          </button>
-          <button 
-            onClick={() => { setActiveTab('azkar'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'azkar' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            📿 أذكار المسلم اليومية
-          </button>
-          <button 
-            onClick={() => { setActiveTab('dua'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'dua' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            🤲 دعاء اليوم المأثور
-          </button>
-          <button 
-            onClick={() => { setActiveTab('hadeeth'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'hadeeth' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            📜 الحديث النبوي الشريف
-          </button>
-          <button 
-            onClick={() => { setActiveTab('history'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'history' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            🗓️ التاريخ الإسلامي والأرشيف
-          </button>
-          <button 
-            onClick={() => { setActiveTab('tasbih'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'tasbih' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            المسبحة الإلكترونية
-          </button>
-          <button 
-            onClick={() => { setActiveTab('ai'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'ai' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            ✨ التدبر والذكر الذكي
-          </button>
-          <button 
-            onClick={() => { setActiveTab('zakat'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'zakat' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            💰 حاسبة الزكاة والمال
-          </button>
-          <button 
-            onClick={() => { setActiveTab('publish'); setMobileMenuOpen(false); }} 
-            className={`text-right px-4 py-3.5 rounded-xl text-sm font-bold transition-all ${
-              activeTab === 'publish' ? 'text-[#02130F] bg-[#D4AF37]' : 'text-gray-300 hover:bg-white/5'
-            }`}
-          >
-            انشر واكسب الأجر
-          </button>
-        </div>
-      )}
+            {[
+              { id: 'home', label: t('nav.home'), icon: Home },
+              { id: 'quran', label: t('nav.quran'), icon: Book },
+              { id: 'hisn', label: t('nav.hisn'), icon: Scroll },
+              { id: 'azkar', label: t('nav.azkar'), icon: Wind },
+              { id: 'dua', label: t('nav.dua'), icon: MessageCircle },
+              { id: 'hadeeth', label: t('nav.hadeeth'), icon: Scroll },
+              { id: 'history', label: i18n.language === 'ar' ? 'التاريخ الإسلامي' : 'Islamic History', icon: Calendar },
+              { id: 'tasbih', label: i18n.language === 'ar' ? 'المسبحة الإلكترونية' : 'Digital Tasbih', icon: Hash },
+              { id: 'ai', label: i18n.language === 'ar' ? 'التدبر والذكر الذكي' : 'Reflection & Smart Dhikr', icon: Sparkles },
+              { id: 'zakat', label: i18n.language === 'ar' ? 'حاسبة الزكاة' : 'Zakat Calculator', icon: Calculator },
+              { id: 'publish', label: i18n.language === 'ar' ? 'انشر واكسب الأجر' : 'Publish & Gain Reward', icon: Share2 }
+            ].map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id as any); setMobileMenuOpen(false); }}
+                  className={`flex items-center gap-4 px-5 py-4 rounded-2xl text-sm font-bold transition-all ${
+                    isActive 
+                      ? 'text-[#02130F] bg-gradient-to-r from-[#D4AF37] to-[#FFF2B2] shadow-lg' 
+                      : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <Icon className={`w-5 h-5 ${isActive ? 'text-[#02130F]' : 'text-[#D4AF37]'}`} />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+            
+            {/* Mobile Auth and Status */}
+            <div className="mt-6 pt-6 border-t border-white/10 flex flex-col gap-4">
+              {user ? (
+                <div className="flex items-center justify-between bg-white/5 p-4 rounded-2xl">
+                  <span className="text-sm text-gray-300 font-sans">مرحباً، {user.displayName}</span>
+                  <button 
+                    onClick={logout}
+                    className="px-4 py-2 text-xs font-bold rounded-xl bg-red-500/10 text-red-400 border border-red-500/20"
+                  >
+                    خروج
+                  </button>
+                </div>
+              ) : (
+                <button 
+                  onClick={loginWithGoogle}
+                  className="w-full py-4 text-sm font-bold rounded-2xl bg-[#D4AF37]/10 text-[#D4AF37] border border-[#D4AF37]/20 flex items-center justify-center gap-2"
+                >
+                  <User className="w-5 h-5" />
+                  تسجيل الدخول
+                </button>
+              )}
+              <div className="flex items-center gap-2.5 text-[10px] bg-emerald-500/10 border border-emerald-500/25 px-4 py-3 rounded-2xl text-emerald-400 font-bold">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                <span>النظام مستقر ونشط الآن للجميع</span>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 5. MAIN CONTAINER */}
       <main className="flex-grow max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -1665,7 +1877,7 @@ ${dua.reference}
         {activeTab === 'home' && (
           <div className="space-y-16 animate-fade-in">
             {/* Banner Hero */}
-            <div className="relative rounded-3xl overflow-hidden bg-gradient-to-b from-[#04251D] to-[#02130F] border border-[#D4AF37]/25 p-8 md:p-16 text-center shadow-2xl">
+            <div className="relative rounded-3xl overflow-hidden bg-[#04251D]/40 backdrop-blur-md border border-[#D4AF37]/25 p-8 md:p-16 text-center shadow-2xl">
               <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#D4AF37_1.5px,transparent_1.5px)] [background-size:24px_24px]"></div>
               
               <div className="relative z-10 max-w-3xl mx-auto space-y-6">
@@ -1711,34 +1923,34 @@ ${dua.reference}
                 </div>
 
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">الفجر</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.fajr}</span>
                   </div>
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">الشروق</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.sunrise}</span>
                   </div>
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">الظهر</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.dhuhr}</span>
                   </div>
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">العصر</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.asr}</span>
                   </div>
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">المغرب</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.maghrib}</span>
                   </div>
-                  <div className="bg-[#031D16] border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
+                  <div className="bg-[#031D16]/40 backdrop-blur-sm border border-[#D4AF37]/15 rounded-2xl p-4 text-center hover:border-[#D4AF37]/40 transition-colors">
                     <span className="block text-xs text-gray-400 mb-1 font-bold">العشاء</span>
                     <span className="block text-xl font-mono font-black text-[#D4AF37]">{prayerTimes.isha}</span>
                   </div>
                 </div>
 
                 {/* Reminders Toggle Section */}
-                <div className="flex flex-col md:flex-row items-center justify-between gap-4 mt-8 p-5 rounded-2xl bg-[#02130F]/80 border border-[#D4AF37]/25 shadow-lg">
+                <div className="flex flex-col md:flex-row items-center justify-between gap-4 mt-8 p-5 rounded-2xl bg-[#02130F]/40 backdrop-blur-sm border border-[#D4AF37]/25 shadow-lg">
                   <div className="flex items-center gap-3.5 text-right w-full md:w-auto">
                     <div className={`p-3 rounded-xl transition-all ${prayerAlertsEnabled ? 'bg-[#D4AF37]/15 text-[#D4AF37] scale-105' : 'bg-white/5 text-gray-500'}`}>
                       <Bell className={`w-5 h-5 ${prayerAlertsEnabled ? 'animate-bounce' : ''}`} />
@@ -2192,16 +2404,16 @@ ${dua.reference}
                     <History className="w-6 h-6 animate-pulse" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-extrabold text-[#FAF6EE] font-amiri">حدث في مثل هذا اليوم من التاريخ الإسلامي 📜</h3>
+                    <h3 className="text-2xl font-extrabold text-[#FAF6EE] font-amiri">{t('header.history')}</h3>
                     <p className="text-xs text-gray-400 font-sans mt-0.5">تصفّح عبق التاريخ وأبرز الغزوات والفتوحات والمناسبات الدينية الخالدة في تاريخ أمتنا</p>
                   </div>
                 </div>
                 
                 {/* Current Hijri Date badge */}
-                <div className="bg-[#031D16] border border-[#D4AF37]/30 rounded-2xl px-5 py-2 flex items-center gap-2">
+                  <div className="bg-[#031D16] border border-[#D4AF37]/30 rounded-2xl px-5 py-2 flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
                   <span className="text-xs font-bold text-amber-300 font-sans">
-                    اليوم الهجري الحالي: {currentHijriDay} {HIJRI_MONTHS[currentHijriMonth - 1]}
+                    {t('history.hijri_current')}: {currentHijriDay} {HIJRI_MONTHS[currentHijriMonth - 1]}
                   </span>
                 </div>
               </div>
@@ -2545,9 +2757,16 @@ ${currentHadeeth.benefit}
           <div className="space-y-8 animate-fade-in font-sans">
             <div className="border-b border-[#D4AF37]/15 pb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div>
-                <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">القرآن الكريم والمصحف الشريف</h2>
-                <p className="text-sm text-gray-400 mt-1">تصفّح واقرأ آيات الذكر الحكيم بصفحات مصورة بالرسم العثماني أو استمع إلى أعذب التلاوات</p>
+                <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">{t('header.quran')}</h2>
+                <p className="text-sm text-gray-400 mt-1">{t('nav.quran_desc')}</p>
               </div>
+              <button
+                onClick={() => setIsShareAyahModalOpen(true)}
+                className="flex items-center gap-2 bg-[#D4AF37]/10 hover:bg-[#D4AF37]/20 text-[#D4AF37] border border-[#D4AF37]/30 px-4 py-2 rounded-xl transition-all font-bold text-sm"
+              >
+                <Share2 className="w-4 h-4" />
+                مشاركة آية
+              </button>
             </div>
 
             {/* Main Quran Section Mode Selector Toggle */}
@@ -2561,7 +2780,7 @@ ${currentHadeeth.benefit}
                 }`}
               >
                 <BookOpen className="w-4 h-4" />
-                <span>📖 قراءة وتصفح المصحف</span>
+                <span>{t('nav.quran_read')}</span>
               </button>
               <button
                 onClick={() => setQuranMode('listen')}
@@ -2572,7 +2791,7 @@ ${currentHadeeth.benefit}
                 }`}
               >
                 <Volume2 className="w-4 h-4" />
-                <span>🔊 استماع للمصحف المرتل</span>
+                <span>{t('nav.quran_listen')}</span>
               </button>
             </div>
 
@@ -2926,22 +3145,58 @@ ${currentHadeeth.benefit}
 
             {/* 2. AUDIO RECITER & SURAH LISTING VIEW */}
             {quranMode === 'listen' && (
-              <div className="space-y-6 animate-fade-in">
-                <div className="bg-[#042019] border border-[#D4AF37]/15 p-5 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4">
+              <motion.div 
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-6"
+              >
+                <div className="flex p-1 bg-[#02130F] rounded-2xl border border-[#D4AF37]/20 relative overflow-hidden">
+                  <button 
+                    onClick={() => setListenSubTab('surahs')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 ${listenSubTab === 'surahs' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
+                    {listenSubTab === 'surahs' && (
+                      <motion.div 
+                        layoutId="activeSubTab"
+                        className="absolute inset-0 bg-[#D4AF37] rounded-xl -z-10"
+                        transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                      />
+                    )}
+                    السور
+                  </button>
+                  <button 
+                    onClick={() => setListenSubTab('history')}
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 ${listenSubTab === 'history' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
+                    {listenSubTab === 'history' && (
+                      <motion.div 
+                        layoutId="activeSubTab"
+                        className="absolute inset-0 bg-[#D4AF37] rounded-xl -z-10"
+                        transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                      />
+                    )}
+                    سجل الاستماع
+                  </button>
+                </div>
+
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.2 }}
+                  className="bg-[#042019] border border-[#D4AF37]/15 p-5 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-inner"
+                >
                   <span className="text-sm font-bold text-gray-300 font-sans">اختر القارئ المفضل لديك للاستماع لوردك الصوتي:</span>
                   <div className="flex items-center gap-3 w-full md:w-auto">
                     <span className="text-xs font-semibold text-[#D4AF37] whitespace-nowrap">القارئ الحالي:</span>
                     <select 
                       value={selectedReciter.id} 
                       onChange={(e) => changeReciter(e.target.value)}
-                      className="bg-[#02130F] border border-[#D4AF37]/35 text-[#FAF6EE] text-xs font-bold rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#D4AF37] cursor-pointer"
+                      className="bg-[#02130F] border border-[#D4AF37]/35 text-[#FAF6EE] text-xs font-bold rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#D4AF37] cursor-pointer hover:border-[#D4AF37] transition-colors"
                     >
                       {RECITERS.map((r) => (
                         <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
                   </div>
-                </div>
+                </motion.div>
 
                 {/* Search Input */}
                 <div className="relative max-w-md">
@@ -2950,13 +3205,13 @@ ${currentHadeeth.benefit}
                     value={quranSearchQuery}
                     onChange={(e) => setQuranSearchQuery(e.target.value)}
                     placeholder="ابحث عن اسم السورة بالكامل (مثال: يس، الفجر)..." 
-                    className="w-full bg-[#042019] border border-[#D4AF37]/20 rounded-xl py-3 pl-4 pr-11 text-xs text-[#FAF6EE] focus:outline-none focus:border-[#D4AF37] placeholder-gray-500"
+                    className="w-full bg-[#042019] border border-[#D4AF37]/20 rounded-xl py-3.5 pl-4 pr-11 text-xs text-[#FAF6EE] focus:outline-none focus:border-[#D4AF37] placeholder-gray-500 transition-all focus:ring-1 focus:ring-[#D4AF37]/30"
                   />
-                  <Search className="absolute right-4 top-3.5 w-4 h-4 text-gray-400" />
+                  <Search className="absolute right-4 top-4 w-4 h-4 text-gray-400" />
                   {quranSearchQuery && (
                     <button 
                       onClick={() => setQuranSearchQuery('')} 
-                      className="absolute left-3 top-3.5 text-xs text-red-400 font-bold hover:underline"
+                      className="absolute left-3 top-4 text-xs text-red-400 font-bold hover:underline"
                     >
                       تفريغ
                     </button>
@@ -2964,61 +3219,143 @@ ${currentHadeeth.benefit}
                 </div>
 
                 {/* Surah List Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {filteredSurahs.map((surah) => {
-                    const isCurrentPlaying = currentPlayingSurah?.id === surah.id;
-                    return (
-                      <div 
-                        key={surah.id}
-                        onClick={() => playSurah(surah)}
-                        className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group ${
-                          isCurrentPlaying 
-                            ? 'bg-[#052F20] border-[#D4AF37] shadow-lg shadow-[#052F20]/50' 
-                            : 'bg-[#042019] border-white/5 hover:border-[#D4AF37]/40 hover:bg-[#062c23]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-3">
-                          {/* Surah ID number in unique circle */}
-                          <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold font-mono text-sm ${
-                            isCurrentPlaying ? 'bg-[#D4AF37] text-[#02130F]' : 'bg-[#02130F] text-amber-200/80 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
-                          }`}>
-                            {surah.id}
-                          </div>
-                          <div>
-                            <h4 className={`text-base font-bold font-amiri ${isCurrentPlaying ? 'text-[#FAF6EE]' : 'text-gray-200'}`}>
-                              سورة {surah.name}
-                            </h4>
-                            <span className="text-[10px] text-gray-400 font-mono">
-                              {surah.englishName} • {surah.verses} آية
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
-                            surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300' : 'bg-teal-400/10 text-teal-300'
-                          }`}>
-                            {surah.type}
-                          </span>
-                          <button className={`p-2 rounded-full transition-all ${
+                <motion.div 
+                  layout
+                  className={`${listenSubTab === 'surahs' ? 'grid' : 'hidden'} grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4`}
+                >
+                  <AnimatePresence mode="popLayout">
+                    {filteredSurahs.map((surah) => {
+                      const isCurrentPlaying = currentPlayingSurah?.id === surah.id;
+                      return (
+                        <motion.div 
+                          layout
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          whileHover={{ scale: 1.02, y: -2 }}
+                          key={surah.id}
+                          onClick={() => playSurah(surah)}
+                          className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group relative overflow-hidden ${
                             isCurrentPlaying 
-                              ? 'bg-[#D4AF37] text-[#02130F]' 
-                              : 'bg-[#02130F] text-[#D4AF37] group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
-                          }`}>
-                            {isCurrentPlaying && isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                
-                {filteredSurahs.length === 0 && (
-                  <div className="text-center py-20 text-gray-500 font-bold">
-                    لا توجد سور مطابقة لبحثك الحالي. جرب كتابة اسم سورة آخر.
-                  </div>
+                              ? 'bg-[#052F20] border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.15)]' 
+                              : 'bg-[#042019] border-white/5 hover:border-[#D4AF37]/40 hover:bg-[#062c23]'
+                          }`}
+                        >
+                          {isCurrentPlaying && (
+                            <motion.div 
+                              layoutId="activeGlow"
+                              className="absolute inset-0 bg-gradient-to-r from-[#D4AF37]/5 to-transparent pointer-events-none"
+                            />
+                          )}
+                          <div className="flex items-center gap-3 relative z-10">
+                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold font-mono text-sm transition-all ${
+                              isCurrentPlaying ? 'bg-[#D4AF37] text-[#02130F] shadow-lg shadow-[#D4AF37]/20' : 'bg-[#02130F] text-amber-200/80 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
+                            }`}>
+                              {surah.id}
+                            </div>
+                            <div>
+                              <h4 className={`text-base font-bold font-amiri ${isCurrentPlaying ? 'text-[#FAF6EE]' : 'text-gray-200'}`}>
+                                سورة {surah.name}
+                              </h4>
+                              <span className="text-[10px] text-gray-400 font-mono">
+                                {surah.englishName} • {surah.verses} آية
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 relative z-10">
+                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
+                              surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300' : 'bg-teal-400/10 text-teal-300'
+                            }`}>
+                              {surah.type}
+                            </span>
+                            <motion.button 
+                              whileTap={{ scale: 0.9 }}
+                              className={`p-2 rounded-full transition-all ${
+                                isCurrentPlaying 
+                                  ? 'bg-[#D4AF37] text-[#02130F]' 
+                                  : 'bg-[#02130F] text-[#D4AF37] group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
+                              }`}>
+                              {isCurrentPlaying && isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                            </motion.button>
+                          </div>
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </motion.div>
+
+                {listenSubTab === 'history' && (
+                  <motion.div 
+                    layout
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="space-y-4"
+                  >
+                    <AnimatePresence mode="popLayout">
+                      {listeningHistory.length === 0 ? (
+                        <motion.div 
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          className="text-center py-10 text-gray-400 text-xs italic"
+                        >
+                          لا يوجد سجل استماع مؤخراً. ابدأ بالاستماع للسور!
+                        </motion.div>
+                      ) : (
+                        listeningHistory.map((item, index) => {
+                          const surah = SURAHS.find(s => s.id === item.surahId);
+                          return (
+                            <motion.div 
+                              layout
+                              initial={{ opacity: 0, x: -20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: index * 0.05 }}
+                              key={item.id} 
+                              className="bg-[#042019] border border-[#D4AF37]/15 p-5 rounded-2xl flex items-center justify-between group hover:border-[#D4AF37]/30 transition-all hover:bg-[#052F20]/50"
+                            >
+                              <div className="flex items-center gap-4">
+                                <div className="w-12 h-12 bg-[#02130F] rounded-full flex items-center justify-center text-[#D4AF37] border border-[#D4AF37]/20">
+                                  <History className="w-5 h-5 opacity-60" />
+                                </div>
+                                <div>
+                                  <div className="text-base font-bold text-[#FAF6EE]">سورة {surah?.name}</div>
+                                  <div className="text-xs text-gray-400 flex items-center gap-2 mt-0.5">
+                                    <Clock className="w-3 h-3 opacity-50" />
+                                    آخر استماع: {item.lastListenedAt ? new Date(item.lastListenedAt.toDate()).toLocaleDateString('ar-SA', { day: 'numeric', month: 'long' }) : 'غير معروف'}
+                                  </div>
+                                </div>
+                              </div>
+                              <motion.button 
+                                whileHover={{ scale: 1.05 }}
+                                whileTap={{ scale: 0.95 }}
+                                onClick={() => {
+                                  if (surah) {
+                                    playSurah(surah);
+                                    if (audioRef.current) audioRef.current.currentTime = item.lastPosition || 0;
+                                  }
+                                }}
+                                className="bg-[#D4AF37] text-[#02130F] px-6 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-[#D4AF37]/10 hover:shadow-[#D4AF37]/20 transition-all"
+                              >
+                                استئناف الاستماع
+                              </motion.button>
+                            </motion.div>
+                          )
+                        })
+                      )}
+                    </AnimatePresence>
+                  </motion.div>
                 )}
-              </div>
+                
+                {filteredSurahs.length === 0 && listenSubTab === 'surahs' && (
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-center py-20 text-gray-500 font-bold"
+                  >
+                    لا توجد سور مطابقة لبحثك الحالي. جرب كتابة اسم سورة آخر.
+                  </motion.div>
+                )}
+              </motion.div>
             )}
 
             {/* Feature 2: Quran Reading & Memorization Progress Tracker */}
@@ -3346,47 +3683,356 @@ ${currentHadeeth.benefit}
         )}
 
         {/* ==================== AZKAR TAB ==================== */}
+        {activeTab === 'hisn' && (
+          <div className="space-y-8 animate-fade-in font-sans">
+            {/* Header & Search */}
+            <div className="bg-gradient-to-br from-[#03251B] to-[#02130F] border border-[#D4AF37]/20 rounded-[2.5rem] p-8 sm:p-10 shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-64 h-64 bg-[#D4AF37]/5 blur-[100px] rounded-full -mr-20 -mt-20"></div>
+              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
+                <div className="text-right flex-1">
+                  <h2 className="text-4xl font-black text-[#FAF6EE] font-amiri tracking-tight">{t('header.hisn')}</h2>
+                  <p className="text-base text-gray-400 mt-2 max-w-xl">
+                    المكتبة الشاملة للأذكار والأدعية النبوية الموثقة، مبوبة ومنظمة لتسهل عليك الوصول للذكر المناسب في كل وقت وحال.
+                  </p>
+                </div>
+                <div className="w-full md:w-96">
+                  <div className="relative group">
+                    <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500 group-focus-within:text-[#D4AF37] transition-colors" />
+                    <input 
+                      type="text" 
+                      placeholder="ابحث عن ذكر، دعاء، أو مناسبة..." 
+                      className="w-full bg-[#02130F]/60 border border-white/5 rounded-2xl py-4 pr-12 pl-4 text-sm text-[#FAF6EE] placeholder-gray-600 focus:outline-none focus:border-[#D4AF37]/50 focus:ring-1 focus:ring-[#D4AF37]/20 transition-all font-sans"
+                      value={hisnSearchQuery}
+                      onChange={(e) => setHisnSearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Categories & Results */}
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+              {/* Sidebar: Filters */}
+              <div className="lg:col-span-1 space-y-6">
+                {/* Category Filter */}
+                <div className="bg-[#02130F]/40 border border-[#D4AF37]/10 rounded-3xl p-6">
+                  <h3 className="text-sm font-black text-[#D4AF37] uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <Hash className="w-4 h-4" />
+                    التصنيفات
+                  </h3>
+                  <div className="space-y-1.5">
+                    <button 
+                      onClick={() => setActiveHisnCategory(null)}
+                      className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all ${
+                        activeHisnCategory === null ? 'bg-[#D4AF37] text-[#02130F]' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
+                      }`}
+                    >
+                      الكل
+                    </button>
+                    {Array.from(new Set(HISN_AL_MUSLIM.map(h => h.category))).map(cat => (
+                      <button 
+                        key={cat}
+                        onClick={() => setActiveHisnCategory(cat)}
+                        className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all ${
+                          activeHisnCategory === cat ? 'bg-[#D4AF37] text-[#02130F]' : 'text-gray-400 hover:text-[#FAF6EE] hover:bg-white/5'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Tags Filter (Time-based) */}
+                <div className="bg-[#02130F]/40 border border-[#D4AF37]/10 rounded-3xl p-6">
+                  <h3 className="text-sm font-black text-[#D4AF37] uppercase tracking-widest mb-6 flex items-center gap-2">
+                    <Clock className="w-4 h-4" />
+                    الأوقات المستحبة
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    {['الصباح', 'المساء', 'قبل النوم', 'دبر الصلاة'].map(tag => (
+                      <button 
+                        key={tag}
+                        onClick={() => setActiveHisnTag(activeHisnTag === tag ? null : tag)}
+                        className={`px-3 py-2 rounded-xl text-[10px] font-black transition-all border ${
+                          activeHisnTag === tag 
+                            ? 'bg-[#D4AF37]/20 border-[#D4AF37] text-[#D4AF37]' 
+                            : 'bg-white/5 border-transparent text-gray-400 hover:border-white/10'
+                        }`}
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border border-indigo-500/20 rounded-3xl p-6">
+                  <h4 className="text-xs font-bold text-indigo-300 mb-2">💡 نصيحة للذاكرين</h4>
+                  <p className="text-[11px] text-gray-400 leading-relaxed font-sans">
+                    أفضل الذكر ما واطأ فيه القلب اللسان، وكان عن تدبر وخشوع. استشعر معاني الكلمات أثناء تكرارها.
+                  </p>
+                </div>
+              </div>
+
+              {/* Main Content: Dhikr Grid */}
+              <div className="lg:col-span-3 space-y-6">
+                {/* Breadcrumbs */}
+                {(activeHisnCategory || activeHisnTag) && (
+                  <motion.div 
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-500 bg-[#02130F]/40 px-4 py-2 rounded-xl border border-white/5 w-fit"
+                  >
+                    <button 
+                      onClick={() => { setActiveHisnCategory(null); setActiveHisnTag(null); }}
+                      className="hover:text-[#D4AF37] transition-colors cursor-pointer"
+                    >
+                      حصن المسلم
+                    </button>
+                    {activeHisnCategory && (
+                      <>
+                        <ChevronLeft className="w-3 h-3 text-gray-700" />
+                        <button 
+                          onClick={() => setActiveHisnTag(null)}
+                          className={`hover:text-[#D4AF37] transition-colors cursor-pointer ${!activeHisnTag ? 'text-[#D4AF37]' : ''}`}
+                        >
+                          {activeHisnCategory}
+                        </button>
+                      </>
+                    )}
+                    {activeHisnTag && (
+                      <>
+                        <ChevronLeft className="w-3 h-3 text-gray-700" />
+                        <span className="text-[#D4AF37]">{activeHisnTag}</span>
+                      </>
+                    )}
+                  </motion.div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  {HISN_AL_MUSLIM.filter(dhikr => {
+                    const matchesSearch = dhikr.title.includes(hisnSearchQuery) || 
+                                        dhikr.items.some(item => item.text.includes(hisnSearchQuery));
+                    const matchesCategory = activeHisnCategory ? dhikr.category === activeHisnCategory : true;
+                    const matchesTag = activeHisnTag ? dhikr.tags?.includes(activeHisnTag) : true;
+                    return matchesSearch && matchesCategory && matchesTag;
+                  }).map((dhikr) => (
+                    <div 
+                      key={dhikr.id}
+                      onClick={() => setSelectedHisnDhikr(dhikr)}
+                      className="group bg-[#031D16] border border-white/5 p-6 rounded-[2rem] hover:border-[#D4AF37]/30 hover:bg-[#04251D] transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between"
+                    >
+                      <div className="absolute top-0 left-0 w-16 h-16 bg-[#D4AF37]/5 blur-3xl -ml-8 -mt-8 group-hover:bg-[#D4AF37]/10 transition-colors"></div>
+                      
+                      <div className="relative z-10">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex flex-wrap gap-2">
+                            <span className="text-[10px] font-black text-[#D4AF37] uppercase tracking-widest bg-[#D4AF37]/5 px-2 py-0.5 rounded-md border border-[#D4AF37]/10">
+                              {dhikr.category}
+                            </span>
+                            {dhikr.tags?.map(tag => (
+                              <span key={tag} className="text-[9px] font-bold text-gray-400 bg-white/5 px-2 py-0.5 rounded-md border border-white/5">
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="p-2 bg-white/5 rounded-lg text-gray-500 group-hover:text-[#D4AF37] transition-colors">
+                            <Scroll className="w-4 h-4" />
+                          </div>
+                        </div>
+                        <h4 className="text-xl font-black text-[#FAF6EE] font-amiri leading-tight mb-2 group-hover:translate-x-[-4px] transition-transform">{dhikr.title}</h4>
+                        <p className="text-[10px] text-gray-500 font-sans line-clamp-1">{dhikr.items[0].text}</p>
+                      </div>
+
+                      <div className="relative z-10 mt-6 flex items-center justify-between">
+                        <span className="text-[10px] text-gray-500 font-bold">{dhikr.items.length} {dhikr.items.length > 1 ? 'أذكار' : 'ذكر'}</span>
+                        <div className="flex items-center gap-1 text-[10px] font-black text-[#D4AF37] opacity-0 group-hover:opacity-100 transition-all translate-x-4 group-hover:translate-x-0">
+                          <span>عرض التفاصيل</span>
+                          <ChevronLeft className="w-3 h-3" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {HISN_AL_MUSLIM.filter(dhikr => {
+                  const matchesSearch = dhikr.title.includes(hisnSearchQuery) || 
+                                      dhikr.items.some(item => item.text.includes(hisnSearchQuery));
+                  const matchesCategory = activeHisnCategory ? dhikr.category === activeHisnCategory : true;
+                  const matchesTag = activeHisnTag ? dhikr.tags?.includes(activeHisnTag) : true;
+                  return matchesSearch && matchesCategory && matchesTag;
+                }).length === 0 && (
+                  <div className="flex flex-col items-center justify-center py-20 text-center">
+                    <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center text-gray-600 mb-6 border border-white/5">
+                      <Search className="w-8 h-8" />
+                    </div>
+                    <h5 className="text-lg font-bold text-gray-400">عذراً، لم نجد ما تبحث عنه</h5>
+                    <p className="text-sm text-gray-600 mt-2 font-sans">حاول استخدام كلمات مفتاحية أخرى أو تصفح الأقسام.</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Dhikr Detail Modal */}
+            <AnimatePresence>
+              {selectedHisnDhikr && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 lg:p-8">
+                  <motion.div 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    onClick={() => setSelectedHisnDhikr(null)}
+                    className="absolute inset-0 bg-[#02130F]/90 backdrop-blur-md"
+                  />
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                    className="relative w-full max-w-3xl max-h-[85vh] bg-[#031D16] border border-[#D4AF37]/30 rounded-[2.5rem] shadow-2xl overflow-hidden flex flex-col"
+                  >
+                    {/* Modal Header */}
+                    <div className="p-6 sm:p-8 border-b border-white/5 flex items-center justify-between sticky top-0 bg-[#031D16] z-10">
+                      <div className="text-right">
+                        <span className="text-[10px] font-black text-[#D4AF37] uppercase tracking-widest block mb-1">{selectedHisnDhikr.category}</span>
+                        <h3 className="text-2xl font-black text-[#FAF6EE] font-amiri">{selectedHisnDhikr.title}</h3>
+                      </div>
+                      <button 
+                        onClick={() => setSelectedHisnDhikr(null)}
+                        className="p-3 bg-white/5 rounded-2xl text-gray-400 hover:text-[#FAF6EE] hover:bg-white/10 transition-all cursor-pointer"
+                      >
+                        <X className="w-6 h-6" />
+                      </button>
+                    </div>
+
+                    {/* Modal Content */}
+                    <div className="flex-1 overflow-y-auto p-6 sm:p-8 space-y-6 custom-scrollbar">
+                      {selectedHisnDhikr.items.map((item, idx) => (
+                        <div key={idx} className="bg-[#02130F]/60 border border-white/5 p-8 rounded-3xl relative group">
+                          <div className="absolute top-4 left-4 flex gap-2">
+                            <button 
+                              onClick={() => {
+                                navigator.clipboard.writeText(item.text);
+                                triggerToast('تم نسخ الذكر بنجاح ✨');
+                              }}
+                              className="p-2.5 bg-white/5 rounded-xl text-gray-500 hover:text-[#D4AF37] hover:bg-[#D4AF37]/10 transition-all opacity-0 group-hover:opacity-100"
+                              title="نسخ الذكر"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-2xl text-[#FAF6EE] font-amiri leading-loose text-center mb-8">
+                            {item.text}
+                          </p>
+                          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-6 border-t border-white/5">
+                            <div className="flex items-center gap-3">
+                              <span className="text-[10px] bg-[#D4AF37]/10 text-[#D4AF37] px-3 py-1.5 rounded-full border border-[#D4AF37]/20 font-black">
+                                تكرار: {item.count} {item.count > 10 ? 'مرة' : 'مرات'}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-gray-500 font-sans italic text-center sm:text-right">
+                              {item.reference}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Modal Footer */}
+                    <div className="p-6 sm:p-8 border-t border-white/5 bg-[#02130F]/40 flex items-center justify-between">
+                      <p className="text-[10px] text-gray-500 font-sans">
+                        المصدر: حصن المسلم من أذكار الكتاب والسنة - د. سعيد بن علي بن وهف القحطاني
+                      </p>
+                      <button 
+                        onClick={() => {
+                          const text = selectedHisnDhikr.items.map(i => i.text).join('\n\n');
+                          navigator.share({ title: selectedHisnDhikr.title, text }).catch(() => {
+                            navigator.clipboard.writeText(text);
+                            triggerToast('تم نسخ جميع الأذكار للمشاركة ✨');
+                          });
+                        }}
+                        className="flex items-center gap-2 px-6 py-3 rounded-xl bg-[#D4AF37] text-[#02130F] text-xs font-black hover:scale-105 active:scale-95 transition-all shadow-lg shadow-[#D4AF37]/20"
+                      >
+                        <Share2 className="w-4 h-4" />
+                        مشاركة الكل
+                      </button>
+                    </div>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
+          </div>
+        )}
+
         {activeTab === 'azkar' && (
           <div className="space-y-8 animate-fade-in">
             <div className="border-b border-[#D4AF37]/15 pb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
               <div>
-                <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">📿 أذكار المسلم والتحصين اليومي</h2>
+                <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">{t('header.azkar')}</h2>
                 <p className="text-sm text-gray-400 mt-1 font-sans">أذكار اليوم والليلة كاملة بالتشكيل والفضل، مع عداد فائق السرعة والاستجابة لمرافقة الذكر.</p>
               </div>
-              <button 
-                onClick={resetCurrentCategoryAzkar} 
-                className="px-4 py-2.5 text-xs font-bold bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl hover:bg-red-500/20 transition-all flex items-center gap-2 cursor-pointer font-sans"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                تصفير أذكار القسم الحالي
-              </button>
+              
+              <div className="flex flex-col gap-3 w-full md:w-auto items-end">
+                {/* Mode Switcher */}
+                <div className="flex bg-[#02130F]/60 p-1 rounded-2xl border border-[#D4AF37]/15 font-sans">
+                  <button 
+                    onClick={() => setAzkarMode('text')}
+                    className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                      azkarMode === 'text' ? 'bg-[#D4AF37] text-[#02130F] shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    الأذكار المكتوبة
+                  </button>
+                  <button 
+                    onClick={() => setAzkarMode('audio')}
+                    className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+                      azkarMode === 'audio' ? 'bg-[#D4AF37] text-[#02130F] shadow-lg' : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    <Volume2 className="w-4 h-4" />
+                    الأذكار الصوتية
+                  </button>
+                </div>
+
+                {azkarMode === 'text' && (
+                  <button 
+                    onClick={resetCurrentCategoryAzkar} 
+                    className="px-4 py-2 text-[10px] font-bold bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg hover:bg-red-500/20 transition-all flex items-center gap-2 cursor-pointer font-sans"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    تصفير أذكار القسم الحالي
+                  </button>
+                )}
+              </div>
             </div>
 
-            {/* Category Selector Tabs */}
-            <div className="flex flex-wrap gap-2 pb-2 font-sans">
+            {azkarMode === 'text' ? (
+              <>
+                {/* Category Selector Tabs */}
+            <div className="flex flex-wrap gap-3 pb-4 font-sans overflow-x-auto no-scrollbar">
               {azkarDataState.map((cat) => (
                 <button 
                   key={cat.id}
                   onClick={() => setActiveAzkarCategory(cat.id)}
-                  className={`px-5 py-3 rounded-xl text-xs font-bold border transition-all cursor-pointer ${
+                  className={`px-6 py-3.5 rounded-2xl text-xs font-bold border transition-all duration-300 cursor-pointer whitespace-nowrap flex items-center gap-2 group ${
                     activeAzkarCategory === cat.id 
-                      ? 'bg-[#D4AF37] text-[#02130F] border-[#D4AF37] font-black shadow-md shadow-[#D4AF37]/25' 
-                      : 'bg-[#042019] border-white/5 text-gray-400 hover:text-white hover:bg-white/5'
+                      ? 'bg-[#D4AF37] text-[#02130F] border-[#D4AF37] font-black shadow-xl shadow-[#D4AF37]/30 scale-[1.02]' 
+                      : 'bg-[#042019] border-white/5 text-gray-400 hover:text-white hover:bg-[#052a21] hover:border-white/10 hover:translate-y-[-2px]'
                   }`}
                 >
-                  {cat.name}
+                  <span className="group-hover:scale-125 transition-transform">{cat.name.split(' ')[0]}</span>
+                  <span>{cat.name.split(' ').slice(1).join(' ')}</span>
                 </button>
               ))}
               <button
                 onClick={() => setActiveAzkarCategory('favorites')}
-                className={`px-5 py-3 rounded-xl text-xs font-bold border transition-all cursor-pointer flex items-center gap-2 ${
+                className={`px-6 py-3.5 rounded-2xl text-xs font-bold border transition-all duration-300 cursor-pointer whitespace-nowrap flex items-center gap-2 group ${
                   activeAzkarCategory === 'favorites'
-                    ? 'bg-[#D4AF37] text-[#02130F] border-[#D4AF37] font-black shadow-md shadow-[#D4AF37]/25'
-                    : 'bg-[#042019] border-white/5 text-yellow-400 hover:bg-white/5'
+                    ? 'bg-yellow-400 text-[#02130F] border-yellow-400 font-black shadow-xl shadow-yellow-400/30 scale-[1.02]'
+                    : 'bg-[#042019] border-white/5 text-yellow-500/80 hover:text-yellow-400 hover:bg-[#052a21] hover:border-white/10 hover:translate-y-[-2px]'
                 }`}
               >
-                <Star className={`w-3.5 h-3.5 ${activeAzkarCategory === 'favorites' ? 'fill-[#02130F]' : 'fill-yellow-400'}`} />
-                <span>⭐ المفضلة ({favoriteAzkarIds.length})</span>
+                <Star className={`w-4 h-4 transition-transform duration-300 ${activeAzkarCategory === 'favorites' ? 'fill-[#02130F] scale-110' : 'fill-none group-hover:scale-125'}`} />
+                <span>المفضلة ({favoriteAzkarIds.length})</span>
               </button>
             </div>
 
@@ -3467,6 +4113,151 @@ ${currentHadeeth.benefit}
                 });
               })()}
             </div>
+              </>
+            ) : (
+              <div className="space-y-8 animate-fade-in font-sans">
+                {/* Audio Adhkar Player Controls (Persistent at top when playing) */}
+                {currentAudioAdhkar && (
+                  <div className="bg-gradient-to-r from-[#03251B] to-[#02130F] border border-[#D4AF37]/40 rounded-3xl p-6 shadow-2xl relative overflow-hidden">
+                    <div className="absolute inset-0 opacity-5 bg-[radial-gradient(#D4AF37_1px,transparent_1px)] [background-size:20px_20px] pointer-events-none"></div>
+                    
+                    <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-6">
+                      <div className="flex items-center gap-5 w-full md:w-auto">
+                        <div className="w-20 h-20 rounded-2xl bg-[#D4AF37]/10 border border-[#D4AF37]/30 flex items-center justify-center text-3xl shadow-inner relative group">
+                           <div className="absolute inset-0 flex items-center justify-center animate-pulse opacity-20">
+                             <Sparkles className="w-10 h-10 text-[#D4AF37]" />
+                           </div>
+                           <span>🎧</span>
+                        </div>
+                        <div className="text-right">
+                          <h4 className="text-xl font-black text-[#FAF6EE] font-amiri">{currentAudioAdhkar.title}</h4>
+                          <p className="text-xs text-[#D4AF37] font-bold mt-1">بصوت: {currentAudioAdhkar.reader}</p>
+                          <div className="flex items-center gap-3 mt-2">
+                             <span className="text-[10px] bg-white/5 px-2 py-0.5 rounded-lg border border-white/5 text-gray-400">
+                               {currentAudioAdhkar.duration} دقيقة
+                             </span>
+                             {isAudioLoop && (
+                               <span className="text-[10px] bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-lg border border-emerald-500/20 flex items-center gap-1 font-bold">
+                                 <RotateCcw className="w-2.5 h-2.5" />
+                                 تكرار مفعل
+                               </span>
+                             )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Main Player UI */}
+                      <div className="flex flex-col items-center gap-3 w-full max-w-md">
+                        <div className="flex items-center gap-6">
+                          <button 
+                            onClick={() => setIsAudioLoop(!isAudioLoop)}
+                            className={`p-2.5 rounded-xl transition-all border ${
+                              isAudioLoop 
+                                ? 'bg-[#D4AF37]/10 text-[#D4AF37] border-[#D4AF37]/30' 
+                                : 'text-gray-500 border-transparent hover:bg-white/5'
+                            }`}
+                            title="تكرار تلقائي"
+                          >
+                            <RotateCcw className={`w-5 h-5 ${isAudioLoop ? 'animate-spin-slow' : ''}`} />
+                          </button>
+
+                          <button 
+                            onClick={togglePlay}
+                            className="w-14 h-14 rounded-full bg-[#D4AF37] text-[#02130F] flex items-center justify-center shadow-lg shadow-[#D4AF37]/20 hover:scale-110 active:scale-95 transition-all"
+                          >
+                            {isPlaying ? <Pause className="w-6 h-6 fill-current" /> : <Play className="w-6 h-6 fill-current ml-1" />}
+                          </button>
+
+                          <button 
+                            onClick={() => {
+                              if (audioRef.current) audioRef.current.currentTime += 10;
+                            }}
+                            className="p-2.5 rounded-xl text-gray-400 hover:text-[#FAF6EE] transition-all border border-transparent hover:border-white/10"
+                          >
+                            <ChevronLeft className="w-5 h-5" />
+                          </button>
+                        </div>
+
+                        {/* Progress Bar (simplified) */}
+                        <div className="w-full space-y-1">
+                          <div className="w-full bg-white/5 h-1.5 rounded-full overflow-hidden cursor-pointer" onClick={(e) => {
+                             const rect = e.currentTarget.getBoundingClientRect();
+                             const x = e.clientX - rect.left;
+                             const clickedPercent = x / rect.width;
+                             if (audioRef.current) audioRef.current.currentTime = clickedPercent * duration;
+                          }}>
+                            <div 
+                              className="bg-[#D4AF37] h-full transition-all" 
+                              style={{ width: `${(currentTime / duration) * 100 || 0}%` }}
+                            ></div>
+                          </div>
+                          <div className="flex justify-between text-[9px] font-mono text-gray-500 font-bold">
+                            <span>{Math.floor(duration / 60)}:{(Math.floor(duration % 60)).toString().padStart(2, '0')}</span>
+                            <span>{Math.floor(currentTime / 60)}:{(Math.floor(currentTime % 60)).toString().padStart(2, '0')}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Audio Adhkar Grid List */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                  {AUDIO_AZKAR_DATA.map((audioAdhkar) => {
+                    const isCurrent = currentAudioAdhkar?.id === audioAdhkar.id;
+                    return (
+                      <div 
+                        key={audioAdhkar.id}
+                        onClick={() => playAudioAdhkar(audioAdhkar)}
+                        className={`group p-5 rounded-3xl border transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between min-h-[160px] ${
+                          isCurrent 
+                            ? 'bg-[#052F20] border-[#D4AF37]/50 shadow-lg scale-[1.02]' 
+                            : 'bg-[#031D16] border-white/5 hover:border-[#D4AF37]/30 hover:bg-[#04251D]'
+                        }`}
+                      >
+                        {/* Decorative background icon */}
+                        <div className="absolute -left-4 -bottom-4 text-7xl opacity-5 grayscale pointer-events-none group-hover:scale-110 transition-transform">
+                          📻
+                        </div>
+
+                        <div className="relative z-10 flex justify-between items-start">
+                          <div className="text-right">
+                            <h5 className="text-lg font-black text-[#FAF6EE] font-amiri mb-1">{audioAdhkar.title}</h5>
+                            <p className="text-[10px] text-gray-400 font-sans">بصوت {audioAdhkar.reader}</p>
+                          </div>
+                          <div className={`p-3 rounded-2xl transition-all ${isCurrent && isPlaying ? 'bg-[#D4AF37] text-[#02130F] animate-pulse' : 'bg-white/5 text-[#D4AF37] group-hover:bg-[#D4AF37]/10'}`}>
+                            {isCurrent && isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
+                          </div>
+                        </div>
+
+                        <div className="relative z-10 flex items-center justify-between mt-6 pt-4 border-t border-white/5">
+                           <div className="flex items-center gap-1.5 text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                             <Clock className="w-3 h-3" />
+                             <span>{audioAdhkar.duration}</span>
+                           </div>
+                           <span className="text-[10px] font-black text-[#D4AF37] uppercase tracking-widest bg-[#D4AF37]/5 px-2 py-0.5 rounded-md border border-[#D4AF37]/10">
+                             {audioAdhkar.category}
+                           </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Info Card */}
+                <div className="bg-[#02130F]/40 border border-[#D4AF37]/10 p-6 rounded-3xl flex flex-col md:flex-row items-center gap-5">
+                   <div className="p-4 rounded-2xl bg-teal-500/10 text-teal-400">
+                     <Award className="w-8 h-8" />
+                   </div>
+                   <div className="text-right flex-1">
+                      <h6 className="text-sm font-bold text-[#FAF6EE] mb-1">الاستماع عوضاً عن القراءة</h6>
+                      <p className="text-xs text-gray-400 leading-relaxed font-sans">
+                        أثبتت الدراسات أن الاستماع للأذكار والقرآن بتمهل وتدبر يساعد في خفض مستويات التوتر وزيادة التركيز الإيماني. يمكنك تفعيل خيار **التكرار التلقائي** لترك الأذكار تعمل في الخلفية أثناء انشغالك بمهامك اليومية.
+                      </p>
+                   </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -3474,8 +4265,8 @@ ${currentHadeeth.benefit}
         {activeTab === 'tasbih' && (
           <div className="space-y-8 animate-fade-in text-right">
             <div className="border-b border-[#D4AF37]/15 pb-6">
-              <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">المسبحة الإلكترونية ومستودع الأوراد الذكي</h2>
-              <p className="text-sm text-gray-400 mt-1 font-sans">تتبع تسبيحاتك اليومية والكلية التي تستوعب الآلاف والمليون مع مستودع أوراد مخصص وتفاعلي يعمل بسلاسة فائقة على جميع الأجهزة والمتصفحات.</p>
+              <h2 className="text-3xl font-extrabold text-[#FAF6EE] font-amiri">{t('header.tasbih')}</h2>
+              <p className="text-sm text-gray-400 mt-1 font-sans">{t('nav.tasbih_desc')}</p>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
@@ -4131,18 +4922,27 @@ ${currentHadeeth.benefit}
       </main>
 
       {/* 6. STICKY BOTTOM AUDIO PLAYER */}
-      {currentPlayingSurah && (
+      {(currentPlayingSurah || currentAudioAdhkar) && (
         <div className="sticky bottom-0 z-40 bg-[#02130F]/98 border-t border-[#D4AF37]/25 p-4 shadow-2xl">
           <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 font-sans">
             
-            {/* Surah details */}
+            {/* Audio details */}
             <div className="flex items-center gap-3 w-full md:w-auto text-right">
               <div className="w-10 h-10 rounded-xl bg-[#D4AF37] text-[#02130F] flex items-center justify-center font-bold text-sm">
-                ق
+                {currentPlayingSurah ? 'ق' : '📿'}
               </div>
               <div>
-                <span className="text-[10px] text-teal-400 font-bold block">سورة {currentPlayingSurah.name} ({currentPlayingSurah.type})</span>
-                <h4 className="text-xs font-bold text-[#FAF6EE]">{selectedReciter.name}</h4>
+                {currentPlayingSurah ? (
+                  <>
+                    <span className="text-[10px] text-teal-400 font-bold block">سورة {currentPlayingSurah.name} ({currentPlayingSurah.type})</span>
+                    <h4 className="text-xs font-bold text-[#FAF6EE]">{selectedReciter.name}</h4>
+                  </>
+                ) : currentAudioAdhkar ? (
+                  <>
+                    <span className="text-[10px] text-teal-400 font-bold block">{currentAudioAdhkar.title}</span>
+                    <h4 className="text-xs font-bold text-[#FAF6EE]">{currentAudioAdhkar.reader}</h4>
+                  </>
+                ) : null}
               </div>
             </div>
 
@@ -4151,7 +4951,7 @@ ${currentHadeeth.benefit}
               <button 
                 onClick={togglePlay}
                 className="p-3.5 rounded-full bg-[#D4AF37] hover:bg-amber-400 text-[#02130F] transition-all transform active:scale-95 shadow-lg cursor-pointer"
-                aria-label={isPlaying ? 'Pause surah' : 'Play surah'}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
               >
                 {isPlaying ? <Pause className="w-4 h-4 fill-[#02130F]" /> : <Play className="w-4 h-4 fill-[#02130F]" />}
               </button>

@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "User preferences and progress data",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "User email address"
+        },
+        "prayerAlertsEnabled": {
+          "type": "boolean",
+          "description": "Whether prayer alerts are enabled"
+        },
+        "totalTasbihCount": {
+          "type": "number",
+          "description": "Total tasbih count"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "createdAt", "updatedAt"]
+    },
+    "ListeningHistory": {
+      "title": "Listening History",
+      "description": "History of listened Surahs",
+      "type": "object",
+      "properties": {
+        "surahId": { "type": "string" },
+        "lastPosition": { "type": "number" },
+        "lastListenedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["surahId", "lastPosition", "lastListenedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Stores user profiles containing preferences and usage statistics."
+    },
+    "/users/{userId}/listeningHistory/{historyId}": {
+      "schema": {
+        "$ref": "#/entities/ListeningHistory"
+      },
+      "description": "Stores listening history for each user."
+    }
+  }
+}
