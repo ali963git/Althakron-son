@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@theme {
+  --font-cairo: "Cairo", "sans-serif";
+  --font-amiri: "Amiri", "serif";
+}
+
+/* Custom scrollbars and glowing animations to reinforce the premium emerald theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #02130F;
+}
+::-webkit-scrollbar-thumb {
+  background: #D4AF37;
+  border-radius: 10px;
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 20s linear infinite;
+}
+

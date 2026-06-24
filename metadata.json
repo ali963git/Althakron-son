@@ -1,0 +1,6 @@
+{
+  "name": "الذاكرون",
+  "description": "منصة إسلامية شاملة تضم القرآن الكريم كاملاً، أذكار المسلم اليومية، مسبحة إلكترونية، حاسبة الزكاة، بوصلة القبلة، ومساعد تدبر إيماني ذكي مدعوم بالذكاء الاصطناعي.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
