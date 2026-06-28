@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   BookOpen, 
   Moon, 
@@ -22,6 +22,7 @@ import {
   ExternalLink,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   Bookmark,
   BookMarked,
   ZoomIn,
@@ -43,7 +44,10 @@ import {
   MessageCircle,
   Scroll,
   Hash,
-  X
+  X,
+  Headphones,
+  SkipForward,
+  SkipBack
 } from 'lucide-react';
 import { SURAHS, Surah } from './data/surahs';
 import { AZKAR_DATA, PRESETS_DHIKR, ZikrItem, AzkarCategory, AudioZikrItem, AUDIO_AZKAR_DATA } from './data/azkar';
@@ -88,18 +92,47 @@ const FEATURED_VERSES = [
 interface Reciter {
   id: string;
   name: string;
+  nameEn?: string;
   server: string;
 }
 
 const RECITERS: Reciter[] = [
-  { id: "afs", name: "الشيخ مشاري راشد العفاسي", server: "https://server8.mp3quran.net/afs/" },
-  { id: "dosari", name: "الشيخ ياسر الدوسري", server: "https://server11.mp3quran.net/yasser/" },
-  { id: "turki", name: "الشيخ بدر التركي", server: "https://server12.mp3quran.net/badr_turki/" },
-  { id: "shatri", name: "الشيخ أبو بكر الشاطري", server: "https://server11.mp3quran.net/shatri/" },
-  { id: "minsh", name: "الشيخ محمد صديق المنشاوي (المجود)", server: "https://server10.mp3quran.net/minsh_mjwd/" },
-  { id: "basit", name: "الشيخ عبد الباسط عبد الصمد", server: "https://server7.mp3quran.net/basit/" },
-  { id: "ajm", name: "الشيخ أحمد بن علي العجمي", server: "https://server10.mp3quran.net/ajm/" }
+  { id: "afs", name: "الشيخ مشاري راشد العفاسي", nameEn: "Sheikh Mishary Rashid Al-Afasy", server: "https://server8.mp3quran.net/afs/" },
+  { id: "maher", name: "الشيخ ماهر المعيقلي", nameEn: "Sheikh Maher Al-Muaiqly", server: "https://server12.mp3quran.net/maher/" },
+  { id: "sds", name: "الشيخ عبد الرحمن السديس", nameEn: "Sheikh Abdul Rahman Al-Sudais", server: "https://server11.mp3quran.net/sds/" },
+  { id: "dosari", name: "الشيخ ياسر الدوسري", nameEn: "Sheikh Yasser Al-Dosari", server: "https://server11.mp3quran.net/yasser/" },
+  { id: "basit", name: "الشيخ عبد الباسط عبد الصمد", nameEn: "Sheikh Abdul Basit Abdul Samad", server: "https://server7.mp3quran.net/basit/" },
+  { id: "minsh", name: "الشيخ محمد صديق المنشاوي (المجود)", nameEn: "Sheikh Mohamed Siddiq El-Minshawi (Tajweed)", server: "https://server10.mp3quran.net/minsh_mjwd/" },
+  { id: "husr", name: "الشيخ محمود خليل الحصري", nameEn: "Sheikh Mahmoud Khalil Al-Husary", server: "https://server13.mp3quran.net/husr/" },
+  { id: "ajm", name: "الشيخ أحمد بن علي العجمي", nameEn: "Sheikh Ahmad Al-Ajmy", server: "https://server10.mp3quran.net/ajm/" },
+  { id: "s_gmd", name: "الشيخ سعد الغامدي", nameEn: "Sheikh Saad Al-Ghamdi", server: "https://server7.mp3quran.net/s_gmd/" },
+  { id: "frs_a", name: "الشيخ فارس عباد", nameEn: "Sheikh Fares Abbad", server: "https://server8.mp3quran.net/frs_a/" },
+  { id: "hazza", name: "الشيخ هزاع البلوشي", nameEn: "Sheikh Hazza Al-Balushi", server: "https://server11.mp3quran.net/hazza/" },
+  { id: "islam", name: "الشيخ إسلام صبحي", nameEn: "Sheikh Islam Sobhi", server: "https://server14.mp3quran.net/islam/" },
+  { id: "qtm", name: "الشيخ ناصر القطامي", nameEn: "Sheikh Nasser Al-Qatami", server: "https://server6.mp3quran.net/qtm/" },
+  { id: "rad", name: "الشيخ رعد محمد الكردي", nameEn: "Sheikh Raad Al-Kurdi", server: "https://server12.mp3quran.net/rad/" },
+  { id: "shatri", name: "الشيخ أبو بكر الشاطري", nameEn: "Sheikh Abu Bakr Al-Shatri", server: "https://server11.mp3quran.net/shatri/" },
+  { id: "turki", name: "الشيخ بدر التركي", nameEn: "Sheikh Badr Al-Turki", server: "https://server12.mp3quran.net/badr_turki/" }
 ];
+
+const ISLAMIC_NETWORK_MAP: Record<string, string> = {
+  afs: "ar.alafasy",
+  maher: "ar.mahermuaiqly",
+  sds: "ar.abdurrahmaansudais",
+  dosari: "ar.yasseraldosari",
+  basit: "ar.abdulbasitmurattal",
+  minsh: "ar.minshawi",
+  husr: "ar.husary",
+  ajm: "ar.ahmedajamy",
+  s_gmd: "ar.saadghamidi",
+  frs_a: "ar.faresabbad",
+  hazza: "ar.hazzaalbalushi",
+  islam: "ar.islamsobhi",
+  qtm: "ar.nasserneqatami",
+  rad: "ar.raadalkurdi",
+  shatri: "ar.abubakralshatri",
+  turki: "ar.badr_turki",
+};
 
 export default function App() {
   const { user, loginWithGoogle, logout } = useAuth();
@@ -347,11 +380,21 @@ export default function App() {
 
   // Custom audio player state
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const retryFunctionRef = useRef<() => void>();
+  const activeAudioIdRef = useRef<string | null>(null);
+  const playbackRetryRef = useRef<{
+    surahId: number;
+    reciterId: string;
+    attempt: number;
+    lastPosition?: number;
+    isRetrying?: boolean;
+  } | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolume] = useState<number>(0.85);
   const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [playbackRate, setPlaybackRate] = useState<number>(1.0);
 
   // Azkar Tab State
   const [activeAzkarCategory, setActiveAzkarCategory] = useState<'صباح' | 'مساء' | 'نوم' | 'صلاة' | 'favorites'>('صباح');
@@ -399,13 +442,13 @@ export default function App() {
   const [notifiedKeys, setNotifiedKeys] = useState<string[]>([]);
 
   // Toast trigger helper
-  const triggerToast = (message: string) => {
+  const triggerToast = useCallback((message: string) => {
     setToastText(message);
     setShowToast(true);
     setTimeout(() => {
       setShowToast(false);
     }, 4000);
-  };
+  }, []);
 
   // 1. Initial mounting setup
   useEffect(() => {
@@ -514,7 +557,7 @@ export default function App() {
 
   // Fetch Listening History
   useEffect(() => {
-    if (user && activeTab === 'quran' && quranMode === 'listen' && listenSubTab === 'history') {
+    if (user) {
       // Fetch from Firestore
       const q = query(collection(db, 'users', user.uid, 'listeningHistory'), orderBy('lastListenedAt', 'desc'));
       const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -523,10 +566,14 @@ export default function App() {
           history.push({ id: doc.id, ...doc.data() });
         });
         setListeningHistory(history);
+      }, (err) => {
+        console.warn("Firestore listening history snapshot error (safely handled):", err);
       });
       return () => unsubscribe();
+    } else {
+      setListeningHistory([]);
     }
-  }, [user, activeTab, quranMode, listenSubTab]);
+  }, [user]);
 
   // Keyboard Arrow navigation for Quran pages (RTL: Left arrow -> Next, Right arrow -> Prev)
   useEffect(() => {
@@ -552,6 +599,20 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [activeTab, quranMode, quranPage]);
+
+  // Preload neighboring Quran pages for instant load
+  useEffect(() => {
+    if (activeTab === 'quran' && quranMode === 'read') {
+      const preloadPage = (pageNo: number) => {
+        if (pageNo >= 1 && pageNo <= 604) {
+          const img = new Image();
+          img.src = `https://quran.ksu.edu.sa/png_big/${pageNo}.png`;
+        }
+      };
+      if (quranPage < 604) preloadPage(quranPage + 1);
+      if (quranPage > 1) preloadPage(quranPage - 1);
+    }
+  }, [quranPage, activeTab, quranMode]);
 
   // Calculations for Prayer Times (Dynamic approximation)
   const computePrayerTimes = (lat: number, lng: number) => {
@@ -690,16 +751,50 @@ export default function App() {
 
     // 2. Browser standard notification if granted
     if ('Notification' in window && Notification.permission === 'granted') {
-      try {
-        const title = `🕌 ${prayerName}`;
-        const options = {
-          body: message,
-          silent: true,
-          tag: `prayer-alert-${key}`
-        };
-        new Notification(title, options);
-      } catch (err) {
-        console.error('Failed to show native browser notification:', err);
+      const title = `🕌 ${prayerName}`;
+      const options = {
+        body: message,
+        silent: true,
+        tag: `prayer-alert-${key}`
+      };
+
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistration()
+          .then((registration) => {
+            if (registration) {
+              registration.showNotification(title, options)
+                .catch((swErr) => {
+                  console.warn('Failed to show notification via service worker:', swErr);
+                  // Fallback
+                  try {
+                    new Notification(title, options);
+                  } catch (constructErr) {
+                    console.info('Notification constructor fallback failed:', constructErr);
+                  }
+                });
+            } else {
+              // No service worker registered, use constructor
+              try {
+                new Notification(title, options);
+              } catch (constructErr) {
+                console.info('Notification constructor failed (this is expected on some mobile devices without active ServiceWorker):', constructErr);
+              }
+            }
+          })
+          .catch((err) => {
+            console.warn('Error fetching service worker registration, using fallback:', err);
+            try {
+              new Notification(title, options);
+            } catch (constructErr) {
+              console.info('Notification constructor fallback failed:', constructErr);
+            }
+          });
+      } else {
+        try {
+          new Notification(title, options);
+        } catch (err) {
+          console.info('Notification constructor failed on browser with no serviceWorker support:', err);
+        }
       }
     }
 
@@ -857,6 +952,132 @@ export default function App() {
   }, []);
 
   // 3. Audio Player handlers
+  const handlePlaybackError = useCallback((e?: Event) => {
+    console.warn("Audio element failed to load or play source:", e);
+    console.log("Current playbackRetryRef:", playbackRetryRef.current);
+    
+    const retryState = playbackRetryRef.current;
+    if (retryState && !retryState.isRetrying) {
+      retryState.isRetrying = true;
+      const surah = SURAHS.find(s => s.id === retryState.surahId);
+      const reciter = RECITERS.find(r => r.id === retryState.reciterId);
+      
+      if (surah) {
+        const nextAttempt = retryState.attempt + 1;
+        const currentPos = audioRef.current ? audioRef.current.currentTime : (retryState.lastPosition || 0);
+        
+        if (nextAttempt === 1) {
+          // Fallback Stage 1: Try using download.mp3quran.net instead of the specific server
+          const origServer = reciter ? reciter.server : "https://server8.mp3quran.net/afs/";
+          let fallbackServer = origServer;
+          try {
+            if (origServer.includes("mp3quran.net")) {
+              const urlObj = new URL(origServer);
+              fallbackServer = `https://download.mp3quran.net${urlObj.pathname}`;
+            }
+          } catch (err) {
+            console.warn("Error parsing reciter server URL:", err);
+          }
+          const fallbackUrl = `${fallbackServer}${surah.file}.mp3`;
+          
+          console.log(`Playback fallback stage 1: Trying download.mp3quran.net -> ${fallbackUrl}`);
+          playbackRetryRef.current = {
+            ...retryState,
+            attempt: nextAttempt,
+            lastPosition: currentPos,
+            isRetrying: false // Reset
+          };
+          
+          triggerToast('جاري التحميل من خادم بديل... 🔄');
+          
+          if (audioRef.current) {
+            audioRef.current.src = fallbackUrl;
+            audioRef.current.load();
+            if (currentPos > 0) {
+              audioRef.current.currentTime = currentPos;
+            }
+            audioRef.current.play().then(() => {
+              setIsPlaying(true);
+            }).catch(err => {
+              console.warn("Playback fallback stage 1 failed to play:", err);
+              // Retry the error handling if it fails to play
+              playbackRetryRef.current = { ...retryState, isRetrying: false };
+              handlePlaybackError();
+            });
+          }
+          return;
+        } else if (nextAttempt === 2) {
+          // Fallback Stage 2: Try using Islamic Network CDN for the specific reciter
+          const reciterId = reciter ? reciter.id : "afs";
+          const mappedEdition = ISLAMIC_NETWORK_MAP[reciterId] || "ar.alafasy";
+          const surahIdPadded = String(surah.id).padStart(3, '0');
+          const fallbackUrl = `https://cdn.islamic.network/quran/audio-surah/128/${mappedEdition}/${surahIdPadded}.mp3`;
+          
+          console.log(`Playback fallback stage 2: Trying Islamic Network CDN -> ${fallbackUrl}`);
+          playbackRetryRef.current = {
+            ...retryState,
+            attempt: nextAttempt,
+            lastPosition: currentPos,
+            isRetrying: false // Reset
+          };
+          
+          triggerToast('جاري التحميل من خادم السحاب البديل... 🌐🔄');
+          
+          if (audioRef.current) {
+            audioRef.current.src = fallbackUrl;
+            audioRef.current.load();
+            if (currentPos > 0) {
+              audioRef.current.currentTime = currentPos;
+            }
+            audioRef.current.play().then(() => {
+              setIsPlaying(true);
+            }).catch(err => {
+              console.warn("Playback fallback stage 2 failed to play:", err);
+              playbackRetryRef.current = { ...retryState, isRetrying: false };
+              handlePlaybackError();
+            });
+          }
+          return;
+        } else if (nextAttempt === 3) {
+          // Fallback Stage 3: Try Alafasy on Islamic Network CDN (highly guaranteed fallback)
+          const surahIdPadded = String(surah.id).padStart(3, '0');
+          const fallbackUrl = `https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${surahIdPadded}.mp3`;
+          
+          console.log(`Playback fallback stage 3: Trying Alafasy on Islamic Network CDN -> ${fallbackUrl}`);
+          playbackRetryRef.current = {
+            ...retryState,
+            attempt: nextAttempt,
+            lastPosition: currentPos,
+            isRetrying: false // Reset
+          };
+          
+          triggerToast('جاري التشغيل عبر قارئ الطوارئ البديل (العفاسي)... 🎧⚡');
+          
+          if (audioRef.current) {
+            audioRef.current.src = fallbackUrl;
+            audioRef.current.load();
+            if (currentPos > 0) {
+              audioRef.current.currentTime = currentPos;
+            }
+            audioRef.current.play().then(() => {
+              setIsPlaying(true);
+            }).catch(err => {
+              console.warn("Playback fallback stage 3 failed to play:", err);
+            });
+          }
+          return;
+        }
+      }
+    }
+    
+    setIsPlaying(false);
+    triggerToast('تنبيه: تعذر تشغيل الصوت من كافة الخوادم المتاحة. يرجى محاولة قارئ آخر أو التحقق من اتصالك بالإنترنت 🌐⚠️');
+  }, [triggerToast]);
+
+  useEffect(() => {
+    retryFunctionRef.current = handlePlaybackError;
+  }, [handlePlaybackError]);
+
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -903,9 +1124,7 @@ export default function App() {
     };
 
     const handleAudioError = (e: Event) => {
-      console.warn("Audio element failed to load or play source:", e);
-      setIsPlaying(false);
-      triggerToast('تنبيه: تعذر تحميل الملف الصوتي من الخادم. يرجى التحقق من اتصالك بالإنترنت 🌐⚠️');
+        handlePlaybackError(e);
     };
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
@@ -921,7 +1140,7 @@ export default function App() {
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('error', handleAudioError);
     };
-  }, [user, currentPlayingSurah, currentAudioAdhkar, isAudioLoop]);
+  }, [user, currentPlayingSurah, currentAudioAdhkar, isAudioLoop, selectedReciter, handlePlaybackError]);
 
   // Sync volume & mute
   useEffect(() => {
@@ -929,6 +1148,36 @@ export default function App() {
       audioRef.current.volume = isMuted ? 0 : volume;
     }
   }, [volume, isMuted]);
+
+  // Sync playback rate (speed)
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = playbackRate;
+    }
+  }, [playbackRate, currentPlayingSurah, currentAudioAdhkar]);
+
+  const skipTime = (amount: number) => {
+    if (!audioRef.current) return;
+    let newTime = audioRef.current.currentTime + amount;
+    if (newTime < 0) newTime = 0;
+    if (newTime > duration) newTime = duration;
+    audioRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
+  };
+
+  const stopAudio = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
+    activeAudioIdRef.current = null;
+    playbackRetryRef.current = null;
+    setIsPlaying(false);
+    setCurrentPlayingSurah(null);
+    setCurrentAudioAdhkar(null);
+    setCurrentTime(0);
+    setDuration(0);
+  };
 
   const togglePlay = () => {
     if (!audioRef.current || (!currentPlayingSurah && !currentAudioAdhkar)) return;
@@ -939,8 +1188,12 @@ export default function App() {
       audioRef.current.play().then(() => {
         setIsPlaying(true);
       }).catch((err) => {
-        console.error('Audio play error:', err);
-        triggerToast('حدث خطأ أثناء تشغيل الصوت. يرجى المحاولة مرة أخرى.');
+        if (err.name === 'AbortError') {
+          console.log("Playback interrupted by a new load request (this is normal).");
+        } else {
+          console.error('Audio play error:', err);
+          triggerToast('حدث خطأ أثناء تشغيل الصوت. يرجى المحاولة مرة أخرى.');
+        }
       });
     }
   };
@@ -948,6 +1201,10 @@ export default function App() {
   const playAudioAdhkar = (adhkar: AudioZikrItem) => {
     if (!audioRef.current) return;
     
+    const audioId = `adhkar-${adhkar.id}`;
+    activeAudioIdRef.current = audioId;
+    playbackRetryRef.current = null;
+
     audioRef.current.src = adhkar.audioUrl;
     audioRef.current.load();
     
@@ -956,39 +1213,72 @@ export default function App() {
     setIsPlaying(true);
     
     audioRef.current.play().then(() => {
-        setIsPlaying(true);
-        triggerToast(`جاري تشغيل ${adhkar.title} بصوت ${adhkar.reader} 🎧✨`);
+        if (activeAudioIdRef.current === audioId) {
+          setIsPlaying(true);
+          triggerToast(`جاري تشغيل ${adhkar.title} بصوت ${adhkar.reader} 🎧✨`);
+        }
     }).catch(e => {
-        console.warn("Audio play error:", e);
-        setIsPlaying(false);
+        if (e.name === 'AbortError') {
+          console.log("Adhkar playback interrupted by a new request.");
+        } else {
+          console.warn("Audio play error:", e);
+          setIsPlaying(false);
+        }
     });
   };
 
-  const playSurah = async (surah: Surah) => {
+  const playSurah = async (surah: Surah, startFromPosition?: number) => {
     if (!audioRef.current) return;
     
+    const audioId = `surah-${surah.id}`;
+    activeAudioIdRef.current = audioId;
+
     // Stop any audio adhkar
     setCurrentAudioAdhkar(null);
     
+    // Reset/initialize retry tracking state
+    playbackRetryRef.current = {
+      surahId: surah.id,
+      reciterId: selectedReciter.id,
+      attempt: 0,
+      lastPosition: startFromPosition
+    };
+
     // Construct full URL
-    // e.g., https://server8.mp3quran.net/afs/001.mp3
     const audioUrl = `${selectedReciter.server}${surah.file}.mp3`;
     
     audioRef.current.src = audioUrl;
     audioRef.current.load();
     
-    // Check for last position
-    if (user) {
-      try {
-        const historyDoc = await getDoc(doc(db, 'users', user.uid, 'listeningHistory', String(surah.id)));
-        if (historyDoc.exists()) {
-          audioRef.current.currentTime = historyDoc.data().lastPosition || 0;
-        }
-      } catch (err: any) {
-        if (err.code !== 'unavailable') {
-          console.error("Error fetching listening history", err);
+    let position = startFromPosition;
+
+    // Check for last position in database if not provided directly
+    if (position === undefined && user) {
+      const cachedItem = listeningHistory.find(item => String(item.id) === String(surah.id));
+      if (cachedItem) {
+        position = cachedItem.lastPosition || 0;
+      } else {
+        try {
+          const historyDoc = await getDoc(doc(db, 'users', user.uid, 'listeningHistory', String(surah.id)));
+          if (historyDoc.exists()) {
+            position = historyDoc.data().lastPosition || 0;
+          }
+        } catch (err: any) {
+          if (err.code !== 'unavailable') {
+            console.error("Error fetching listening history", err);
+          }
         }
       }
+    }
+
+    // Abort if another track was requested while fetching history asynchronously
+    if (activeAudioIdRef.current !== audioId) {
+      console.log(`Stale play request for surah ${surah.id} ignored.`);
+      return;
+    }
+
+    if (position && position > 0) {
+      audioRef.current.currentTime = position;
     }
 
     setCurrentPlayingSurah(surah);
@@ -998,12 +1288,18 @@ export default function App() {
     const playPromise = audioRef.current.play();
     if (playPromise !== undefined) {
       playPromise.then(() => {
-        setIsPlaying(true);
-        triggerToast(`جاري تشغيل سورة ${surah.name} بصوت ${selectedReciter.name}`);
+        if (activeAudioIdRef.current === audioId) {
+          setIsPlaying(true);
+          triggerToast(`جاري تشغيل سورة ${surah.name} بصوت ${selectedReciter.name}`);
+        }
       }).catch((error) => {
-        console.log("Playback failed initially:", error);
-        // Sometimes browsers block autoplay without user gesture. That is fine.
-        setIsPlaying(false);
+        if (error.name === 'AbortError') {
+          console.log("Surah playback interrupted by a new load request.");
+        } else {
+          console.error("Playback failed initially:", error);
+          retryFunctionRef.current?.();
+          setIsPlaying(false);
+        }
       });
     }
   };
@@ -1015,6 +1311,10 @@ export default function App() {
     
     // If a surah is currently playing, switch the stream URL dynamically
     if (currentPlayingSurah) {
+      if (playbackRetryRef.current) {
+        playbackRetryRef.current.reciterId = reciterId;
+        playbackRetryRef.current.attempt = 0; // Reset attempt count for new reciter
+      }
       const audioUrl = `${reciter.server}${currentPlayingSurah.file}.mp3`;
       if (audioRef.current) {
         const wasPlaying = isPlaying;
@@ -1024,8 +1324,12 @@ export default function App() {
           audioRef.current.play().then(() => {
             setIsPlaying(true);
           }).catch((err) => {
-            console.warn("Play failed on reciter change:", err);
-            setIsPlaying(false);
+            if (err.name === 'AbortError') {
+              console.log("Play aborted during reciter change.");
+            } else {
+              console.warn("Play failed on reciter change:", err);
+              setIsPlaying(false);
+            }
           });
         }
         triggerToast(`تم تحويل القارئ إلى ${reciter.name}`);
@@ -1639,10 +1943,31 @@ ${dua.reference}
   };
 
   // Helper to filter surahs
-  const filteredSurahs = SURAHS.filter(surah => 
-    surah.name.includes(quranSearchQuery) || 
-    surah.englishName.toLowerCase().includes(quranSearchQuery.toLowerCase())
-  );
+  const filteredSurahs = useMemo(() => {
+    return SURAHS.filter(surah => 
+      surah.name.includes(quranSearchQuery) || 
+      surah.englishName.toLowerCase().includes(quranSearchQuery.toLowerCase())
+    );
+  }, [quranSearchQuery]);
+
+  // Helper to filter Hisn al-Muslim
+  const filteredHisn = useMemo(() => {
+    return HISN_AL_MUSLIM.filter(dhikr => {
+      const matchesSearch = dhikr.title.includes(hisnSearchQuery) || 
+                          dhikr.items.some(item => item.text.includes(hisnSearchQuery));
+      const matchesCategory = activeHisnCategory ? dhikr.category === activeHisnCategory : true;
+      const matchesTag = activeHisnTag ? dhikr.tags?.includes(activeHisnTag) : true;
+      return matchesSearch && matchesCategory && matchesTag;
+    });
+  }, [hisnSearchQuery, activeHisnCategory, activeHisnTag]);
+
+  // Helper to filter and map active Azkar items
+  const displayedAzkarItems = useMemo(() => {
+    if (activeAzkarCategory === 'favorites') {
+      return azkarDataState.flatMap(cat => cat.items.map(item => ({ ...item, categoryId: cat.id }))).filter(item => favoriteAzkarIds.includes(item.id));
+    }
+    return azkarDataState.find(cat => cat.id === activeAzkarCategory)?.items.map(item => ({ ...item, categoryId: activeAzkarCategory })) || [];
+  }, [activeAzkarCategory, azkarDataState, favoriteAzkarIds]);
 
   return (
     <div className="relative text-[#E6DFD3] font-cairo antialiased min-h-screen flex flex-col justify-between overflow-x-hidden">
@@ -1703,11 +2028,10 @@ ${dua.reference}
                 referrerPolicy="no-referrer"
               />
             </div>
-            <div>
-              <h1 className="text-2xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-[#FAF6EE] via-[#D4AF37] to-[#FFF2B2] font-amiri leading-none">
-                الذَّاكِرُون
-              </h1>
-              <p className="text-[10px] text-teal-400 font-bold uppercase tracking-wider mt-1">صدقة جارية ونشر مبارك</p>
+            {/* Golden Badge styled precisely like the screenshot */}
+            <div className="bg-gradient-to-r from-[#8C6D1F] via-[#D4AF37] to-[#8C6D1F] text-[#011B12] px-4 py-1.5 rounded-lg text-center flex flex-col justify-center shadow-lg border border-[#D4AF37] select-none font-sans">
+              <span className="text-sm font-black tracking-wide leading-tight">صدقة جارية</span>
+              <span className="text-[10px] font-bold tracking-wider leading-none mt-0.5 opacity-90">ونشر مبارك</span>
             </div>
           </div>
 
@@ -3150,10 +3474,10 @@ ${currentHadeeth.benefit}
                 animate={{ opacity: 1, y: 0 }}
                 className="space-y-6"
               >
-                <div className="flex p-1 bg-[#02130F] rounded-2xl border border-[#D4AF37]/20 relative overflow-hidden">
+                <div className="flex p-1 bg-[#02130F] rounded-2xl border border-[#D4AF37]/20 relative overflow-hidden max-w-sm mx-auto mb-8">
                   <button 
                     onClick={() => setListenSubTab('surahs')}
-                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 ${listenSubTab === 'surahs' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 flex items-center justify-center gap-2 ${listenSubTab === 'surahs' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
                     {listenSubTab === 'surahs' && (
                       <motion.div 
                         layoutId="activeSubTab"
@@ -3161,11 +3485,12 @@ ${currentHadeeth.benefit}
                         transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
                       />
                     )}
-                    السور
+                    <BookOpen className="w-4 h-4" />
+                    {t('quran.listen.surahs')}
                   </button>
                   <button 
                     onClick={() => setListenSubTab('history')}
-                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 ${listenSubTab === 'history' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
+                    className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all relative z-10 flex items-center justify-center gap-2 ${listenSubTab === 'history' ? 'text-[#02130F]' : 'text-gray-400 hover:text-gray-200'}`}>
                     {listenSubTab === 'history' && (
                       <motion.div 
                         layoutId="activeSubTab"
@@ -3173,7 +3498,8 @@ ${currentHadeeth.benefit}
                         transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
                       />
                     )}
-                    سجل الاستماع
+                    <History className="w-4 h-4" />
+                    {t('quran.listen.history')}
                   </button>
                 </div>
 
@@ -3181,20 +3507,37 @@ ${currentHadeeth.benefit}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.2 }}
-                  className="bg-[#042019] border border-[#D4AF37]/15 p-5 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-inner"
+                  className="bg-[#02130F]/80 backdrop-blur-sm border border-[#D4AF37]/25 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-[0_0_20px_rgba(212,175,55,0.08)] text-right"
                 >
-                  <span className="text-sm font-bold text-gray-300 font-sans">اختر القارئ المفضل لديك للاستماع لوردك الصوتي:</span>
-                  <div className="flex items-center gap-3 w-full md:w-auto">
-                    <span className="text-xs font-semibold text-[#D4AF37] whitespace-nowrap">القارئ الحالي:</span>
-                    <select 
-                      value={selectedReciter.id} 
-                      onChange={(e) => changeReciter(e.target.value)}
-                      className="bg-[#02130F] border border-[#D4AF37]/35 text-[#FAF6EE] text-xs font-bold rounded-xl px-3 py-2.5 focus:outline-none focus:border-[#D4AF37] cursor-pointer hover:border-[#D4AF37] transition-colors"
-                    >
-                      {RECITERS.map((r) => (
-                        <option key={r.id} value={r.id}>{r.name}</option>
-                      ))}
-                    </select>
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                    <div className="w-10 h-10 rounded-full bg-[#D4AF37]/10 flex items-center justify-center shrink-0 border border-[#D4AF37]/20">
+                      <Headphones className="w-5 h-5 text-[#D4AF37]" />
+                    </div>
+                    <span className="text-sm font-bold text-gray-200 font-sans leading-relaxed">
+                      {i18n.language === 'ar' ? 'اختر القارئ المفضل لديك للاستماع لوردك الصوتي:' : t('quran.listen.reciter_prompt')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 bg-[#011B12] px-4 py-2.5 rounded-xl border border-[#D4AF37]/15 w-full sm:w-auto justify-between sm:justify-start">
+                    <span className="text-xs font-semibold text-[#D4AF37] whitespace-nowrap">
+                      {i18n.language === 'ar' ? 'القارئ الحالي:' : t('quran.listen.current_reciter')}
+                    </span>
+                    <div className="relative flex items-center">
+                      <select 
+                        value={selectedReciter.id} 
+                        onChange={(e) => changeReciter(e.target.value)}
+                        className="bg-transparent text-[#FAF6EE] text-xs md:text-sm font-bold rounded-lg pl-7 pr-2 py-1.5 focus:outline-none cursor-pointer appearance-none font-sans leading-relaxed"
+                      >
+                        {RECITERS.map((r) => (
+                          <option key={r.id} value={r.id} className="bg-[#02130F] text-[#FAF6EE]">
+                            {i18n.language === 'ar' ? r.name : (r.nameEn || r.name)}
+                          </option>
+                        ))}
+                      </select>
+                      {/* Custom Chevron icon */}
+                      <div className="absolute left-1.5 pointer-events-none text-[#D4AF37]/80 flex items-center">
+                        <ChevronDown className="w-4 h-4" />
+                      </div>
+                    </div>
                   </div>
                 </motion.div>
 
@@ -3204,8 +3547,8 @@ ${currentHadeeth.benefit}
                     type="text" 
                     value={quranSearchQuery}
                     onChange={(e) => setQuranSearchQuery(e.target.value)}
-                    placeholder="ابحث عن اسم السورة بالكامل (مثال: يس، الفجر)..." 
-                    className="w-full bg-[#042019] border border-[#D4AF37]/20 rounded-xl py-3.5 pl-4 pr-11 text-xs text-[#FAF6EE] focus:outline-none focus:border-[#D4AF37] placeholder-gray-500 transition-all focus:ring-1 focus:ring-[#D4AF37]/30"
+                    placeholder={t('quran.listen.search_placeholder')} 
+                    className="w-full bg-[#042019]/80 backdrop-blur-sm border border-[#D4AF37]/20 rounded-xl py-3.5 pl-4 pr-11 text-xs text-[#FAF6EE] focus:outline-none focus:border-[#D4AF37] placeholder-gray-500 transition-all focus:ring-1 focus:ring-[#D4AF37]/30 shadow-inner"
                   />
                   <Search className="absolute right-4 top-4 w-4 h-4 text-gray-400" />
                   {quranSearchQuery && (
@@ -3213,7 +3556,7 @@ ${currentHadeeth.benefit}
                       onClick={() => setQuranSearchQuery('')} 
                       className="absolute left-3 top-4 text-xs text-red-400 font-bold hover:underline"
                     >
-                      تفريغ
+                      {t('quran.listen.clear')}
                     </button>
                   )}
                 </div>
@@ -3221,7 +3564,7 @@ ${currentHadeeth.benefit}
                 {/* Surah List Grid */}
                 <motion.div 
                   layout
-                  className={`${listenSubTab === 'surahs' ? 'grid' : 'hidden'} grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4`}
+                  className={`${listenSubTab === 'surahs' ? 'grid' : 'hidden'} grid-cols-1 gap-4 max-w-4xl mx-auto`}
                 >
                   <AnimatePresence mode="popLayout">
                     {filteredSurahs.map((surah) => {
@@ -3229,54 +3572,70 @@ ${currentHadeeth.benefit}
                       return (
                         <motion.div 
                           layout
-                          initial={{ opacity: 0, scale: 0.95 }}
-                          animate={{ opacity: 1, scale: 1 }}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, scale: 0.95 }}
-                          whileHover={{ scale: 1.02, y: -2 }}
+                          whileHover={{ scale: 1.01, y: -1 }}
                           key={surah.id}
                           onClick={() => playSurah(surah)}
-                          className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group relative overflow-hidden ${
+                          className={`p-5 md:py-5 md:px-7 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group relative overflow-hidden ${
                             isCurrentPlaying 
-                              ? 'bg-[#052F20] border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.15)]' 
-                              : 'bg-[#042019] border-white/5 hover:border-[#D4AF37]/40 hover:bg-[#062c23]'
+                              ? 'bg-[#052F20] border-2 border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.15)]' 
+                              : 'bg-[#042019]/80 backdrop-blur-sm border-white/5 hover:border-[#D4AF37]/30 hover:bg-[#052a21]'
                           }`}
                         >
+                          {/* Ornamental Background Pattern */}
+                          <div className="absolute inset-0 opacity-[0.02] group-hover:opacity-[0.04] transition-opacity pointer-events-none" 
+                            style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #D4AF37 1px, transparent 0)', backgroundSize: '16px 16px' }}
+                          ></div>
+                          
                           {isCurrentPlaying && (
                             <motion.div 
                               layoutId="activeGlow"
                               className="absolute inset-0 bg-gradient-to-r from-[#D4AF37]/5 to-transparent pointer-events-none"
                             />
                           )}
-                          <div className="flex items-center gap-3 relative z-10">
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold font-mono text-sm transition-all ${
-                              isCurrentPlaying ? 'bg-[#D4AF37] text-[#02130F] shadow-lg shadow-[#D4AF37]/20' : 'bg-[#02130F] text-amber-200/80 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
+                          <div className="flex items-center gap-4 relative z-10">
+                            {/* Round Circle ID Badge */}
+                            <div className={`w-11 h-11 rounded-full flex items-center justify-center font-bold text-sm transition-all border ${
+                              isCurrentPlaying 
+                                ? 'bg-[#D4AF37] text-[#02130F] shadow-lg shadow-[#D4AF37]/25 border-transparent' 
+                                : 'bg-[#02130F] text-amber-200/80 border-[#D4AF37]/15 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
                             }`}>
                               {surah.id}
                             </div>
-                            <div>
+                            <div className="text-right">
                               <h4 className={`text-base font-bold font-amiri ${isCurrentPlaying ? 'text-[#FAF6EE]' : 'text-gray-200'}`}>
-                                سورة {surah.name}
+                                {t('quran.listen.surah_prefix')} {surah.name}
                               </h4>
-                              <span className="text-[10px] text-gray-400 font-mono">
-                                {surah.englishName} • {surah.verses} آية
+                              <span className="text-xs text-gray-400 font-sans block mt-0.5">
+                                {surah.englishName} • {surah.verses} {i18n.language === 'ar' ? 'آية' : 'ayahs'}
                               </span>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 relative z-10">
-                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
-                              surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300' : 'bg-teal-400/10 text-teal-300'
+                          <div className="flex items-center gap-3 relative z-10">
+                            <span className={`text-[11px] font-bold px-3 py-1 rounded-full ${
+                              surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300 border border-amber-400/20' : 'bg-teal-400/10 text-teal-300 border border-teal-400/20'
                             }`}>
-                              {surah.type}
+                              {surah.type === 'مكية' ? t('quran.listen.type_meccan') : t('quran.listen.type_medinan')}
                             </span>
                             <motion.button 
                               whileTap={{ scale: 0.9 }}
-                              className={`p-2 rounded-full transition-all ${
+                              className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
                                 isCurrentPlaying 
-                                  ? 'bg-[#D4AF37] text-[#02130F]' 
-                                  : 'bg-[#02130F] text-[#D4AF37] group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
+                                  ? 'bg-[#D4AF37] text-[#02130F] shadow-[0_0_15px_rgba(212,175,55,0.4)] border border-[#D4AF37]' 
+                                  : 'bg-[#02130F] text-[#D4AF37] hover:bg-[#D4AF37] hover:text-[#02130F] border border-[#D4AF37]/20 transition-all duration-300 shadow-md'
                               }`}>
-                              {isCurrentPlaying && isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                              {isCurrentPlaying && isPlaying ? (
+                                <div className="flex items-center gap-1 px-0.5 justify-center">
+                                  <span className="w-0.5 h-2.5 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '0.6s' }}></span>
+                                  <span className="w-0.5 h-3.5 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '0.8s' }}></span>
+                                  <span className="w-0.5 h-2 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '0.5s' }}></span>
+                                </div>
+                              ) : (
+                                <Play className="w-4 h-4" />
+                              )}
                             </motion.button>
                           </div>
                         </motion.div>
@@ -3290,16 +3649,19 @@ ${currentHadeeth.benefit}
                     layout
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    className="space-y-4"
+                    className="space-y-4 max-w-3xl mx-auto"
                   >
                     <AnimatePresence mode="popLayout">
                       {listeningHistory.length === 0 ? (
                         <motion.div 
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          className="text-center py-10 text-gray-400 text-xs italic"
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          className="text-center py-16 bg-[#042019]/50 border border-[#D4AF37]/10 rounded-3xl"
                         >
-                          لا يوجد سجل استماع مؤخراً. ابدأ بالاستماع للسور!
+                          <div className="w-16 h-16 bg-[#02130F] rounded-2xl flex items-center justify-center mx-auto mb-4 border border-[#D4AF37]/20">
+                            <Headphones className="w-8 h-8 text-[#D4AF37]/50" />
+                          </div>
+                          <p className="text-gray-400 text-sm font-sans">{t('quran.listen.history_empty')}</p>
                         </motion.div>
                       ) : (
                         listeningHistory.map((item, index) => {
@@ -3311,17 +3673,20 @@ ${currentHadeeth.benefit}
                               animate={{ opacity: 1, x: 0 }}
                               transition={{ delay: index * 0.05 }}
                               key={item.id} 
-                              className="bg-[#042019] border border-[#D4AF37]/15 p-5 rounded-2xl flex items-center justify-between group hover:border-[#D4AF37]/30 transition-all hover:bg-[#052F20]/50"
+                              className="bg-gradient-to-r from-[#042019] to-[#02130F] border border-[#D4AF37]/15 p-5 rounded-2xl flex items-center justify-between group hover:border-[#D4AF37]/40 transition-all hover:shadow-[0_0_20px_rgba(212,175,55,0.05)] relative overflow-hidden"
                             >
-                              <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 bg-[#02130F] rounded-full flex items-center justify-center text-[#D4AF37] border border-[#D4AF37]/20">
-                                  <History className="w-5 h-5 opacity-60" />
+                              <div className="absolute inset-0 opacity-[0.02] pointer-events-none" 
+                                style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #D4AF37 1px, transparent 0)', backgroundSize: '16px 16px' }}
+                              ></div>
+                              <div className="flex items-center gap-4 relative z-10">
+                                <div className="w-12 h-12 bg-[#02130F] rounded-full flex items-center justify-center text-[#D4AF37] border border-[#D4AF37]/20 group-hover:scale-110 transition-transform">
+                                  <History className="w-5 h-5 opacity-80" />
                                 </div>
                                 <div>
-                                  <div className="text-base font-bold text-[#FAF6EE]">سورة {surah?.name}</div>
-                                  <div className="text-xs text-gray-400 flex items-center gap-2 mt-0.5">
+                                  <div className="text-base font-bold text-[#FAF6EE] font-amiri tracking-wide">{t('quran.listen.surah_prefix')} {surah?.name}</div>
+                                  <div className="text-[11px] font-sans text-gray-400 flex items-center gap-2 mt-1">
                                     <Clock className="w-3 h-3 opacity-50" />
-                                    آخر استماع: {item.lastListenedAt ? new Date(item.lastListenedAt.toDate()).toLocaleDateString('ar-SA', { day: 'numeric', month: 'long' }) : 'غير معروف'}
+                                    {item.lastListenedAt ? new Date(item.lastListenedAt.toDate()).toLocaleDateString(i18n.language === 'ar' ? 'ar-SA' : 'en-US', { day: 'numeric', month: 'long', year: 'numeric' }) : ''}
                                   </div>
                                 </div>
                               </div>
@@ -3330,13 +3695,13 @@ ${currentHadeeth.benefit}
                                 whileTap={{ scale: 0.95 }}
                                 onClick={() => {
                                   if (surah) {
-                                    playSurah(surah);
-                                    if (audioRef.current) audioRef.current.currentTime = item.lastPosition || 0;
+                                    playSurah(surah, item.lastPosition || 0);
                                   }
                                 }}
-                                className="bg-[#D4AF37] text-[#02130F] px-6 py-2.5 rounded-xl text-sm font-bold shadow-lg shadow-[#D4AF37]/10 hover:shadow-[#D4AF37]/20 transition-all"
+                                className="bg-[#D4AF37] text-[#02130F] px-5 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-[#D4AF37]/20 hover:shadow-[#D4AF37]/40 transition-all relative z-10 flex items-center gap-2"
                               >
-                                استئناف الاستماع
+                                <Play className="w-3.5 h-3.5" />
+                                {t('quran.listen.continue')}
                               </motion.button>
                             </motion.div>
                           )
@@ -3810,13 +4175,7 @@ ${currentHadeeth.benefit}
                 )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                  {HISN_AL_MUSLIM.filter(dhikr => {
-                    const matchesSearch = dhikr.title.includes(hisnSearchQuery) || 
-                                        dhikr.items.some(item => item.text.includes(hisnSearchQuery));
-                    const matchesCategory = activeHisnCategory ? dhikr.category === activeHisnCategory : true;
-                    const matchesTag = activeHisnTag ? dhikr.tags?.includes(activeHisnTag) : true;
-                    return matchesSearch && matchesCategory && matchesTag;
-                  }).map((dhikr) => (
+                  {filteredHisn.map((dhikr) => (
                     <div 
                       key={dhikr.id}
                       onClick={() => setSelectedHisnDhikr(dhikr)}
@@ -3855,13 +4214,7 @@ ${currentHadeeth.benefit}
                   ))}
                 </div>
 
-                {HISN_AL_MUSLIM.filter(dhikr => {
-                  const matchesSearch = dhikr.title.includes(hisnSearchQuery) || 
-                                      dhikr.items.some(item => item.text.includes(hisnSearchQuery));
-                  const matchesCategory = activeHisnCategory ? dhikr.category === activeHisnCategory : true;
-                  const matchesTag = activeHisnTag ? dhikr.tags?.includes(activeHisnTag) : true;
-                  return matchesSearch && matchesCategory && matchesTag;
-                }).length === 0 && (
+                {filteredHisn.length === 0 && (
                   <div className="flex flex-col items-center justify-center py-20 text-center">
                     <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center text-gray-600 mb-6 border border-white/5">
                       <Search className="w-8 h-8" />
@@ -4039,11 +4392,7 @@ ${currentHadeeth.benefit}
             {/* Selected Category Azkar Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {(() => {
-                const displayedItems = activeAzkarCategory === 'favorites'
-                  ? azkarDataState.flatMap(cat => cat.items.map(item => ({ ...item, categoryId: cat.id }))).filter(item => favoriteAzkarIds.includes(item.id))
-                  : azkarDataState.find(cat => cat.id === activeAzkarCategory)?.items.map(item => ({ ...item, categoryId: activeAzkarCategory })) || [];
-
-                if (activeAzkarCategory === 'favorites' && displayedItems.length === 0) {
+                if (activeAzkarCategory === 'favorites' && displayedAzkarItems.length === 0) {
                   return (
                     <div className="col-span-full bg-[#042019] border border-[#D4AF37]/20 rounded-3xl p-8 md:p-12 text-center space-y-4">
                       <div className="w-16 h-16 bg-[#D4AF37]/10 text-yellow-400 rounded-full flex items-center justify-center mx-auto">
@@ -4057,7 +4406,7 @@ ${currentHadeeth.benefit}
                   );
                 }
 
-                return displayedItems.map((item) => {
+                return displayedAzkarItems.map((item) => {
                   const isCompleted = item.count === 0;
                   const isFav = favoriteAzkarIds.includes(item.id);
                   return (
@@ -4923,71 +5272,129 @@ ${currentHadeeth.benefit}
 
       {/* 6. STICKY BOTTOM AUDIO PLAYER */}
       {(currentPlayingSurah || currentAudioAdhkar) && (
-        <div className="sticky bottom-0 z-40 bg-[#02130F]/98 border-t border-[#D4AF37]/25 p-4 shadow-2xl">
+        <div className="sticky bottom-0 z-40 bg-gradient-to-t from-[#010907] to-[#02130F]/98 border-t border-[#D4AF37]/30 px-4 py-4 md:py-5 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] backdrop-blur-md">
           <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 font-sans">
             
             {/* Audio details */}
             <div className="flex items-center gap-3 w-full md:w-auto text-right">
-              <div className="w-10 h-10 rounded-xl bg-[#D4AF37] text-[#02130F] flex items-center justify-center font-bold text-sm">
-                {currentPlayingSurah ? 'ق' : '📿'}
+              <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#D4AF37] to-amber-500 text-[#02130F] flex items-center justify-center font-black text-lg shadow-lg shadow-[#D4AF37]/10 animate-pulse-slow">
+                {currentPlayingSurah ? '📖' : '📿'}
               </div>
-              <div>
+              <div className="flex-grow">
                 {currentPlayingSurah ? (
                   <>
-                    <span className="text-[10px] text-teal-400 font-bold block">سورة {currentPlayingSurah.name} ({currentPlayingSurah.type})</span>
-                    <h4 className="text-xs font-bold text-[#FAF6EE]">{selectedReciter.name}</h4>
+                    <span className="text-[10px] text-teal-400 font-bold block tracking-wider uppercase">
+                      {i18n.language === 'ar' ? `سورة ${currentPlayingSurah.name}` : `Surah ${currentPlayingSurah.englishName}`} ({i18n.language === 'ar' ? currentPlayingSurah.type : (currentPlayingSurah.type === 'مكية' ? 'Meccan' : 'Medinan')})
+                    </span>
+                    <h4 className="text-xs font-bold text-[#FAF6EE] mt-0.5">
+                      {i18n.language === 'ar' ? selectedReciter.name : (selectedReciter.nameEn || selectedReciter.name)}
+                    </h4>
                   </>
                 ) : currentAudioAdhkar ? (
                   <>
-                    <span className="text-[10px] text-teal-400 font-bold block">{currentAudioAdhkar.title}</span>
-                    <h4 className="text-xs font-bold text-[#FAF6EE]">{currentAudioAdhkar.reader}</h4>
+                    <span className="text-[10px] text-teal-400 font-bold block tracking-wider">
+                      {currentAudioAdhkar.title}
+                    </span>
+                    <h4 className="text-xs font-bold text-[#FAF6EE] mt-0.5">
+                      {currentAudioAdhkar.reader}
+                    </h4>
                   </>
                 ) : null}
               </div>
             </div>
 
             {/* Play controls & progress bar */}
-            <div className="flex items-center gap-4 w-full md:flex-grow md:max-w-xl justify-center">
+            <div className="flex items-center gap-4 w-full md:flex-grow md:max-w-2xl justify-center">
+              {/* Skip Back 10s */}
               <button 
-                onClick={togglePlay}
-                className="p-3.5 rounded-full bg-[#D4AF37] hover:bg-amber-400 text-[#02130F] transition-all transform active:scale-95 shadow-lg cursor-pointer"
-                aria-label={isPlaying ? 'Pause' : 'Play'}
+                onClick={() => skipTime(-10)}
+                className="p-2 rounded-xl text-gray-400 hover:text-amber-300 hover:bg-white/5 transition-all cursor-pointer active:scale-90"
+                title={i18n.language === 'ar' ? 'رجوع 10 ثوانٍ' : 'Rewind 10s'}
               >
-                {isPlaying ? <Pause className="w-4 h-4 fill-[#02130F]" /> : <Play className="w-4 h-4 fill-[#02130F]" />}
+                <SkipBack className="w-4 h-4" />
               </button>
 
-              <div className="flex-grow flex items-center gap-2">
-                <span className="text-[10px] text-gray-500 font-mono">{formatTime(currentTime)}</span>
+              {/* Play / Pause */}
+              <button 
+                onClick={togglePlay}
+                className="p-3.5 rounded-full bg-gradient-to-r from-amber-400 to-[#D4AF37] hover:from-amber-300 hover:to-amber-500 text-[#02130F] transition-all transform active:scale-95 shadow-xl shadow-[#D4AF37]/10 cursor-pointer"
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+              >
+                {isPlaying ? <Pause className="w-4.5 h-4.5 fill-[#02130F] text-[#02130F]" /> : <Play className="w-4.5 h-4.5 fill-[#02130F] text-[#02130F] ml-0.5" />}
+              </button>
+
+              {/* Skip Forward 10s */}
+              <button 
+                onClick={() => skipTime(10)}
+                className="p-2 rounded-xl text-gray-400 hover:text-amber-300 hover:bg-white/5 transition-all cursor-pointer active:scale-90"
+                title={i18n.language === 'ar' ? 'تقديم 10 ثوانٍ' : 'Forward 10s'}
+              >
+                <SkipForward className="w-4 h-4" />
+              </button>
+
+              {/* Progress Slider */}
+              <div className="flex-grow flex items-center gap-2.5">
+                <span className="text-[10px] text-gray-400 font-mono w-8 text-center">{formatTime(currentTime)}</span>
                 <div 
-                  className="h-1.5 bg-white/10 rounded-full flex-grow overflow-hidden cursor-pointer relative" 
+                  className="h-1.5 bg-white/10 rounded-full flex-grow overflow-hidden cursor-pointer relative hover:h-2 transition-all" 
                   onClick={seekAudio}
                 >
                   <div 
-                    className="h-full bg-gradient-to-r from-amber-500 to-[#D4AF37] rounded-full" 
+                    className="h-full bg-gradient-to-r from-amber-500 via-[#D4AF37] to-amber-300 rounded-full shadow-[0_0_10px_rgba(212,175,55,0.5)]" 
                     style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
                   ></div>
                 </div>
-                <span className="text-[10px] text-gray-500 font-mono">{formatTime(duration)}</span>
+                <span className="text-[10px] text-gray-400 font-mono w-8 text-center">{formatTime(duration)}</span>
               </div>
             </div>
 
-            {/* Volume slider */}
-            <div className="hidden md:flex items-center gap-3">
+            {/* Speed & Volume & Dismiss */}
+            <div className="flex items-center gap-4 w-full md:w-auto justify-between md:justify-end border-t md:border-0 border-white/5 pt-3 md:pt-0">
+              {/* Speed Controller */}
+              <div className="flex items-center gap-1.5 bg-[#011B12]/60 px-2 py-1.5 rounded-xl border border-[#D4AF37]/10">
+                <span className="text-[9px] text-gray-400 font-bold uppercase tracking-wider">
+                  {i18n.language === 'ar' ? 'السرعة' : 'Speed'}
+                </span>
+                <select 
+                  value={playbackRate}
+                  onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                  className="bg-transparent text-[#D4AF37] text-[10px] font-black focus:outline-none cursor-pointer"
+                >
+                  <option value="0.75" className="bg-[#02130F]">0.75x</option>
+                  <option value="1.0" className="bg-[#02130F]">1.0x</option>
+                  <option value="1.25" className="bg-[#02130F]">1.25x</option>
+                  <option value="1.5" className="bg-[#02130F]">1.5x</option>
+                  <option value="2.0" className="bg-[#02130F]">2.0x</option>
+                </select>
+              </div>
+
+              {/* Volume */}
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setIsMuted(!isMuted)} 
+                  className="text-gray-400 hover:text-[#FAF6EE] cursor-pointer p-1 rounded-lg hover:bg-white/5 transition-colors"
+                >
+                  {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4 text-[#D4AF37]" />}
+                </button>
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="1" 
+                  step="0.05" 
+                  value={volume}
+                  onChange={(e) => { setVolume(parseFloat(e.target.value)); setIsMuted(false); }}
+                  className="w-16 accent-[#D4AF37] bg-white/10 h-1 rounded-full cursor-pointer hover:accent-amber-400 transition-all" 
+                />
+              </div>
+
+              {/* Close Button */}
               <button 
-                onClick={() => setIsMuted(!isMuted)} 
-                className="text-gray-400 hover:text-[#FAF6EE] cursor-pointer"
+                onClick={stopAudio}
+                className="p-1.5 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-all cursor-pointer"
+                title={i18n.language === 'ar' ? 'إغلاق المشغل' : 'Close Player'}
               >
-                {isMuted || volume === 0 ? <VolumeX className="w-4.5 h-4.5 text-red-400" /> : <Volume2 className="w-4.5 h-4.5 text-[#D4AF37]" />}
+                <X className="w-4.5 h-4.5" />
               </button>
-              <input 
-                type="range" 
-                min="0" 
-                max="1" 
-                step="0.05" 
-                value={volume}
-                onChange={(e) => { setVolume(parseFloat(e.target.value)); setIsMuted(false); }}
-                className="w-20 accent-[#D4AF37] bg-white/10 h-1 rounded-full cursor-pointer" 
-              />
             </div>
 
           </div>

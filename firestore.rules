@@ -67,6 +67,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().email == existing().email &&
           incoming().diff(existing()).affectedKeys().hasOnly([
+            'email',
             'prayerAlertsEnabled', 
             'totalTasbihCount', 
             'updatedAt'
@@ -76,7 +77,8 @@ service cloud.firestore {
       allow delete: if false;
 
       match /listeningHistory/{historyId} {
-        allow read, write: if isSignedIn() && request.auth.uid == userId
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        allow write: if isSignedIn() && request.auth.uid == userId
           && isValidId(historyId);
       }
     }
