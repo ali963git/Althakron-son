@@ -38,6 +38,16 @@
         "lastListenedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["surahId", "lastPosition", "lastListenedAt"]
+    },
+    "DhikrHistory": {
+      "title": "Dhikr History",
+      "description": "Daily dhikr chanting history",
+      "type": "object",
+      "properties": {
+        "count": { "type": "number" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["count"]
     }
   },
   "firestore": {
@@ -52,6 +62,12 @@
         "$ref": "#/entities/ListeningHistory"
       },
       "description": "Stores listening history for each user."
+    },
+    "/users/{userId}/dhikrHistory/{historyId}": {
+      "schema": {
+        "$ref": "#/entities/DhikrHistory"
+      },
+      "description": "Stores daily dhikr counts for each user."
     }
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   BookOpen, 
   Moon, 
@@ -22,7 +22,6 @@ import {
   ExternalLink,
   ChevronRight,
   ChevronLeft,
-  ChevronDown,
   Bookmark,
   BookMarked,
   ZoomIn,
@@ -59,9 +58,69 @@ import { CURATED_HADEETHS, Hadeeth } from './data/hadeethOfTheDay';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAuth } from './AuthProvider';
 import { useTranslation } from 'react-i18next';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { doc, setDoc, getDoc, serverTimestamp, collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+    providerInfo?: {
+      providerId?: string | null;
+      email?: string | null;
+    }[];
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+        providerId: provider.providerId,
+        email: provider.email,
+      })) || []
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 import { ShareAyahModal } from './components/ShareAyahModal';
+import { 
+  AreaChart, 
+  Area, 
+  XAxis, 
+  YAxis, 
+  Tooltip, 
+  ResponsiveContainer, 
+  CartesianGrid, 
+  BarChart, 
+  Bar,
+  Cell
+} from 'recharts';
+import { Flame, TrendingUp, BarChart3, Zap, ChevronUp, ChevronDown, Plus, Trash2 } from 'lucide-react';
 
 // Kaaba Coordinates for Qibla calculation
 const KAABA_LAT = 21.4225;
@@ -115,25 +174,6 @@ const RECITERS: Reciter[] = [
   { id: "turki", name: "الشيخ بدر التركي", nameEn: "Sheikh Badr Al-Turki", server: "https://server12.mp3quran.net/badr_turki/" }
 ];
 
-const ISLAMIC_NETWORK_MAP: Record<string, string> = {
-  afs: "ar.alafasy",
-  maher: "ar.mahermuaiqly",
-  sds: "ar.abdurrahmaansudais",
-  dosari: "ar.yasseraldosari",
-  basit: "ar.abdulbasitmurattal",
-  minsh: "ar.minshawi",
-  husr: "ar.husary",
-  ajm: "ar.ahmedajamy",
-  s_gmd: "ar.saadghamidi",
-  frs_a: "ar.faresabbad",
-  hazza: "ar.hazzaalbalushi",
-  islam: "ar.islamsobhi",
-  qtm: "ar.nasserneqatami",
-  rad: "ar.raadalkurdi",
-  shatri: "ar.abubakralshatri",
-  turki: "ar.badr_turki",
-};
-
 export default function App() {
   const { user, loginWithGoogle, logout } = useAuth();
   const { t, i18n } = useTranslation();
@@ -157,7 +197,9 @@ export default function App() {
             prayerAlertsEnabled: false,
             totalTasbihCount: 0
           }).catch(err => {
-            if (err.code !== 'unavailable') {
+            if (err.code === 'permission-denied') {
+              handleFirestoreError(err, OperationType.CREATE, `users/${user.uid}`);
+            } else if (err.code !== 'unavailable') {
               console.error("Error creating user", err);
             }
           });
@@ -166,7 +208,9 @@ export default function App() {
             email: user.email || '',
             updatedAt: serverTimestamp(),
           }, { merge: true }).catch(err => {
-            if (err.code !== 'unavailable') {
+            if (err.code === 'permission-denied') {
+              handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+            } else if (err.code !== 'unavailable') {
               console.error("Error updating user", err);
             }
           });
@@ -176,17 +220,63 @@ export default function App() {
             setPrayerAlertsEnabled(data.prayerAlertsEnabled);
             localStorage.setItem('prayerAlertsEnabled', String(data.prayerAlertsEnabled));
           }
+          if (data.customDhikrList !== undefined) {
+            setCustomDhikrList(data.customDhikrList);
+            localStorage.setItem('custom_dhikr_list', JSON.stringify(data.customDhikrList));
+          }
         }
       }).catch(err => {
         // If we are offline, it's expected that getDoc might fail or time out
         // We handle it silently if it's a network/availability error
-        if (err.code !== 'unavailable') {
+        if (err.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
+        } else if (err.code !== 'unavailable') {
           console.error("Error fetching user for sync", err);
         } else {
           console.log("App is operating in offline mode. User sync will resume when online.");
         }
       });
     }
+  }, [user]);
+
+  // Sync dhikr history from Firestore when user is available
+  useEffect(() => {
+    if (!user) return;
+    
+    import('firebase/firestore').then(({ collection, getDocs }) => {
+      const collRef = collection(db, 'users', user.uid, 'dhikrHistory');
+      getDocs(collRef).then((snapshot) => {
+        const remoteData: Record<string, number> = {};
+        snapshot.forEach((doc) => {
+          const count = doc.data().count;
+          if (typeof count === 'number') {
+            remoteData[doc.id] = count;
+          }
+        });
+        
+        setDailyHistory(prev => {
+          const merged = { ...prev };
+          let changed = false;
+          Object.keys(remoteData).forEach(key => {
+            if (!merged[key] || remoteData[key] > merged[key]) {
+              merged[key] = remoteData[key];
+              changed = true;
+            }
+          });
+          
+          if (changed) {
+            localStorage.setItem('dhikr_daily_history', JSON.stringify(merged));
+          }
+          return merged;
+        });
+      }).catch(err => {
+        if (err.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.LIST, `users/${user.uid}/dhikrHistory`);
+        } else {
+          console.warn("Could not load dhikr history from Firestore (might be offline):", err);
+        }
+      });
+    });
   }, [user]);
 
   // Navigation & UI States
@@ -370,6 +460,7 @@ export default function App() {
   const [selectedDuaIndex, setSelectedDuaIndex] = useState<number>((new Date().getDate() - 1) % 31);
 
   // Quran Tab state
+  const [recitersList, setRecitersList] = useState<Reciter[]>(RECITERS);
   const [selectedReciter, setSelectedReciter] = useState<Reciter>(RECITERS[0]);
   const [quranSearchQuery, setQuranSearchQuery] = useState<string>('');
   const [hisnSearchQuery, setHisnSearchQuery] = useState<string>('');
@@ -380,15 +471,7 @@ export default function App() {
 
   // Custom audio player state
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const retryFunctionRef = useRef<() => void>();
   const activeAudioIdRef = useRef<string | null>(null);
-  const playbackRetryRef = useRef<{
-    surahId: number;
-    reciterId: string;
-    attempt: number;
-    lastPosition?: number;
-    isRetrying?: boolean;
-  } | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -433,6 +516,271 @@ export default function App() {
   const [customSilverPrice, setCustomSilverPrice] = useState<string>('1.00'); // $1/gram as reference
   const [zakatReport, setZakatReport] = useState<React.ReactNode | null>(null);
 
+  // Daily Dhikr History State
+  const [dailyHistory, setDailyHistory] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('dhikr_daily_history');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    
+    // Seed realistic data for the last 7 days if empty
+    const seeded: Record<string, number> = {};
+    const today = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(today.getDate() - i);
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const dateStr = `${y}-${m}-${day}`;
+      // Give them some nice starter numbers to encourage them
+      seeded[dateStr] = Math.floor(Math.random() * 80) + 40; 
+    }
+    localStorage.setItem('dhikr_daily_history', JSON.stringify(seeded));
+    return seeded;
+  });
+
+  // Record dhikr count (amount is added to today's count)
+  const recordDhikrCount = (amount: number = 1) => {
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const dateStr = `${y}-${m}-${day}`;
+
+    setDailyHistory(prev => {
+      const current = prev[dateStr] || 0;
+      const updatedCount = current + amount;
+      const updated = { ...prev, [dateStr]: updatedCount };
+      localStorage.setItem('dhikr_daily_history', JSON.stringify(updated));
+
+      // Sync with Firestore if logged in
+      if (user) {
+        const docRef = doc(db, 'users', user.uid, 'dhikrHistory', dateStr);
+        setDoc(docRef, { count: updatedCount, lastUpdated: serverTimestamp() }, { merge: true })
+          .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/dhikrHistory/${dateStr}`));
+      }
+
+      return updated;
+    });
+  };
+
+  // Compute live dhikr statistics and weekly history for recharts visual display
+  const dhikrStats = useMemo(() => {
+    const today = new Date();
+    const getFormatted = (d: Date) => {
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    const todayStr = getFormatted(today);
+    const todayCount = dailyHistory[todayStr] || 0;
+
+    // Calculate Grand Total
+    const historyValues = Object.values(dailyHistory) as number[];
+    const grandTotal: number = historyValues.reduce((sum: number, val: number): number => sum + val, 0);
+
+    // Calculate Daily Average
+    const uniqueDays = Object.keys(dailyHistory).length || 1;
+    const dailyAverage = Math.round((grandTotal as number) / uniqueDays);
+
+    // Compute Streak (days in a row with at least 1 dhikr)
+    let streak = 0;
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    const yesterdayStr = getFormatted(yesterday);
+
+    const hasToday = todayCount > 0;
+    const hasYesterday = (dailyHistory[yesterdayStr] || 0) > 0;
+
+    if (hasToday || hasYesterday) {
+      let checkDate = hasToday ? today : yesterday;
+      while (true) {
+        const dateStr = getFormatted(checkDate);
+        if ((dailyHistory[dateStr] || 0) > 0) {
+          streak++;
+          // go to previous day
+          const prevDay = new Date(checkDate);
+          prevDay.setDate(checkDate.getDate() - 1);
+          checkDate = prevDay;
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Format last 7 days for the chart
+    const daysOfWeekAr = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const daysOfWeekEn = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const chartData = [];
+    
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(today.getDate() - i);
+      const dateStr = getFormatted(d);
+      const dayName = i18n.language === 'ar' ? daysOfWeekAr[d.getDay()] : daysOfWeekEn[d.getDay()];
+      chartData.push({
+        name: dayName,
+        count: dailyHistory[dateStr] || 0,
+        formattedDate: dateStr
+      });
+    }
+
+    // Motivational Levels and progress calculations
+    let levelTitle = 'ذاكر مبتدئ';
+    let levelTitleEn = 'Beginner';
+    let badgeColor = 'from-blue-500/20 to-indigo-500/20 border-blue-500/30 text-blue-300';
+    let nextGoal = 100;
+    
+    if (todayCount >= 500) {
+      levelTitle = 'سيد الذاكرين 👑';
+      levelTitleEn = 'Master of Dhikr 👑';
+      badgeColor = 'from-amber-500/30 to-yellow-500/30 border-amber-500/50 text-amber-300 shadow-amber-500/10';
+      nextGoal = 1000;
+    } else if (todayCount >= 300) {
+      levelTitle = 'ذاكر مقرب ✨';
+      levelTitleEn = 'Devout Rememberer ✨';
+      badgeColor = 'from-emerald-500/30 to-teal-500/30 border-emerald-500/50 text-emerald-300 shadow-emerald-500/10';
+      nextGoal = 500;
+    } else if (todayCount >= 100) {
+      levelTitle = 'ذاكر مداوم 📿';
+      levelTitleEn = 'Consistent Rememberer 📿';
+      badgeColor = 'from-yellow-500/20 to-orange-500/20 border-yellow-500/40 text-yellow-300';
+      nextGoal = 300;
+    } else if (todayCount >= 33) {
+      levelTitle = 'ذاكر مجتهد 🌱';
+      levelTitleEn = 'Diligent Rememberer 🌱';
+      badgeColor = 'from-teal-500/10 to-emerald-500/10 border-teal-500/30 text-teal-300';
+      nextGoal = 100;
+    }
+
+    return {
+      todayCount,
+      grandTotal,
+      dailyAverage,
+      streak,
+      chartData,
+      levelTitle,
+      levelTitleEn,
+      badgeColor,
+      nextGoal
+    };
+  }, [dailyHistory, i18n.language]);
+
+  const [showDhikrDashboard, setShowDhikrDashboard] = useState<boolean>(true);
+
+  // Custom Dhikr Item Interface
+  interface CustomDhikrItem {
+    id: string;
+    text: string;
+    count: number;
+    createdAt: string;
+  }
+
+  // Custom Dhikr list state
+  const [customDhikrList, setCustomDhikrList] = useState<CustomDhikrItem[]>(() => {
+    const saved = localStorage.getItem('custom_dhikr_list');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    // Seed some realistic starter custom dhikrs
+    const defaultCustoms: CustomDhikrItem[] = [
+      { id: '1', text: 'أستغفر الله العظيم وأتوب إليه', count: 0, createdAt: new Date().toISOString() },
+      { id: '2', text: 'لا إله إلا الله وحده لا شريك له', count: 0, createdAt: new Date().toISOString() },
+      { id: '3', text: 'اللهم صل وسلم على نبينا محمد', count: 0, createdAt: new Date().toISOString() }
+    ];
+    localStorage.setItem('custom_dhikr_list', JSON.stringify(defaultCustoms));
+    return defaultCustoms;
+  });
+
+  const [newCustomDhikrText, setNewCustomDhikrText] = useState<string>('');
+
+  const addCustomDhikr = (text: string) => {
+    if (!text.trim()) return;
+    const newItem: CustomDhikrItem = {
+      id: Date.now().toString(),
+      text: text.trim(),
+      count: 0,
+      createdAt: new Date().toISOString()
+    };
+    const updatedList = [newItem, ...customDhikrList];
+    setCustomDhikrList(updatedList);
+    localStorage.setItem('custom_dhikr_list', JSON.stringify(updatedList));
+    setNewCustomDhikrText('');
+    triggerToast('تمت إضافة الذكر المخصص بنجاح ✨');
+
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(userRef, { customDhikrList: updatedList, updatedAt: serverTimestamp() }, { merge: true })
+        .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
+    }
+  };
+
+  const incrementCustomDhikr = (id: string) => {
+    const updatedList = customDhikrList.map(item => {
+      if (item.id === id) {
+        const newCount = item.count + 1;
+        recordDhikrCount(1); // Increment today's total stats
+        // Trigger haptic if supported
+        if (navigator.vibrate) {
+          navigator.vibrate(15);
+        }
+        playClickSound();
+        return { ...item, count: newCount };
+      }
+      return item;
+    });
+    setCustomDhikrList(updatedList);
+    localStorage.setItem('custom_dhikr_list', JSON.stringify(updatedList));
+
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(userRef, { customDhikrList: updatedList, updatedAt: serverTimestamp() }, { merge: true })
+        .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
+    }
+  };
+
+  const resetCustomDhikr = (id: string) => {
+    const updatedList = customDhikrList.map(item => {
+      if (item.id === id) {
+        return { ...item, count: 0 };
+      }
+      return item;
+    });
+    setCustomDhikrList(updatedList);
+    localStorage.setItem('custom_dhikr_list', JSON.stringify(updatedList));
+    triggerToast('تم إعادة تعيين العداد إلى صفر 🔄');
+
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(userRef, { customDhikrList: updatedList, updatedAt: serverTimestamp() }, { merge: true })
+        .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
+    }
+  };
+
+  const deleteCustomDhikr = (id: string) => {
+    const updatedList = customDhikrList.filter(item => item.id !== id);
+    setCustomDhikrList(updatedList);
+    localStorage.setItem('custom_dhikr_list', JSON.stringify(updatedList));
+    triggerToast('تم حذف الذكر المخصص 🗑️');
+
+    if (user) {
+      const userRef = doc(db, 'users', user.uid);
+      setDoc(userRef, { customDhikrList: updatedList, updatedAt: serverTimestamp() }, { merge: true })
+        .catch(err => handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`));
+    }
+  };
+
   // Custom share state
   const [customShareName, setCustomShareName] = useState<string>('علي');
   const [generatedShareLink, setGeneratedShareLink] = useState<string>('');
@@ -442,13 +790,135 @@ export default function App() {
   const [notifiedKeys, setNotifiedKeys] = useState<string[]>([]);
 
   // Toast trigger helper
-  const triggerToast = useCallback((message: string) => {
+  const triggerToast = (message: string) => {
     setToastText(message);
     setShowToast(true);
     setTimeout(() => {
       setShowToast(false);
     }, 4000);
-  }, []);
+  };
+
+  // Helper to convert base64 VAPID public key
+  const urlBase64ToUint8Array = (base64String: string) => {
+    const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+    const base64 = (base64String + padding)
+      .replace(/\-/g, '+')
+      .replace(/_/g, '/');
+
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  };
+
+  // Helper to fetch with retries (robust network resiliency)
+  const fetchWithRetry = async (url: string, options?: RequestInit, retries = 3, delay = 1000): Promise<Response> => {
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      return response;
+    } catch (error) {
+      if (retries > 0) {
+        console.warn(`Fetch failed for ${url}, retrying in ${delay}ms... Remaining retries: ${retries}`, error);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return fetchWithRetry(url, options, retries - 1, delay * 2);
+      }
+      throw error;
+    }
+  };
+
+  // Subscribe to Web Push
+  const subscribeToWebPush = async (lat: number = latitude, lng: number = longitude) => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      console.warn('Service workers or Push notifications are not supported in this browser.');
+      return;
+    }
+
+    try {
+      const registration = await navigator.serviceWorker.register('/sw.js');
+      console.log('Service Worker registered with scope:', registration.scope);
+
+      // Fetch config using our retry helper
+      const configResponse = await fetchWithRetry('/api/push/config');
+      const { publicKey } = await configResponse.json();
+
+      if (!publicKey) {
+        throw new Error('VAPID public key is empty.');
+      }
+
+      let subscription;
+      const subscribeOptions = {
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      };
+
+      try {
+        subscription = await registration.pushManager.subscribe(subscribeOptions);
+      } catch (subErr) {
+        console.warn('Initial Push subscription failed (likely due to key mismatch). Unsubscribing and retrying...', subErr);
+        const existingSub = await registration.pushManager.getSubscription();
+        if (existingSub) {
+          await existingSub.unsubscribe();
+          console.log('Successfully unsubscribed stale/conflicting subscription.');
+        }
+        // Retry subscription with the new key
+        subscription = await registration.pushManager.subscribe(subscribeOptions);
+      }
+
+      console.log('Successfully subscribed to Web Push:', subscription);
+
+      // Save subscription on server using our retry helper
+      await fetchWithRetry('/api/push/subscribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          subscription,
+          latitude: lat,
+          longitude: lng,
+          timezoneOffset: new Date().getTimezoneOffset(),
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        })
+      });
+
+      console.log('Push subscription stored on server successfully.');
+    } catch (err) {
+      console.error('Failed to subscribe to Web Push:', err);
+    }
+  };
+
+  // Unsubscribe from Web Push
+  const unsubscribeFromWebPush = async () => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) return;
+
+      const subscription = await registration.pushManager.getSubscription();
+      if (!subscription) return;
+
+      // Unsubscribe on server using our retry helper
+      await fetchWithRetry('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ subscription })
+      });
+
+      await subscription.unsubscribe();
+      console.log('Unsubscribed from Web Push successfully.');
+    } catch (err) {
+      console.error('Failed to unsubscribe from Web Push:', err);
+    }
+  };
 
   // 1. Initial mounting setup
   useEffect(() => {
@@ -542,6 +1012,10 @@ export default function App() {
       calculateQibla(DEFAULT_LAT, DEFAULT_LNG);
     }
 
+    if (savedAlerts && 'Notification' in window && Notification.permission === 'granted') {
+      subscribeToWebPush();
+    }
+
     return () => {
       if (audioRef.current) {
         audioRef.current.pause();
@@ -550,10 +1024,64 @@ export default function App() {
     };
   }, []);
 
+  // Dynamic Reciters update effect to keep servers auto-healed and fully working
+  useEffect(() => {
+    const fetchLiveReciters = async () => {
+      try {
+        const response = await fetch('/api/quran/reciters');
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data && Array.isArray(data.reciters)) {
+          const apiReciters = data.reciters;
+          
+          const updatedReciters = RECITERS.map(rec => {
+            const match = apiReciters.find((apiRec: any) => {
+              const apiName = apiRec.name || '';
+              if (rec.id === 'afs' && apiName.includes('العفاسي')) return true;
+              if (rec.id === 'maher' && apiName.includes('المعيقلي')) return true;
+              if (rec.id === 'sds' && apiName.includes('السديس')) return true;
+              if (rec.id === 'dosari' && apiName.includes('الدوسري')) return true;
+              if (rec.id === 'basit' && apiName.includes('عبد الباسط')) return true;
+              if (rec.id === 'minsh' && apiName.includes('المنشاوي')) return true;
+              if (rec.id === 'husr' && apiName.includes('الحصري')) return true;
+              if (rec.id === 'ajm' && apiName.includes('العجمي')) return true;
+              if (rec.id === 's_gmd' && apiName.includes('سعد الغامدي')) return true;
+              if (rec.id === 'frs_a' && apiName.includes('فارس عباد')) return true;
+              if (rec.id === 'hazza' && apiName.includes('هزاع البلوشي')) return true;
+              if (rec.id === 'islam' && apiName.includes('إسلام صبحي')) return true;
+              if (rec.id === 'qtm' && apiName.includes('ناصر القطامي')) return true;
+              if (rec.id === 'rad' && apiName.includes('رعد')) return true;
+              if (rec.id === 'shatri' && apiName.includes('الشاطري')) return true;
+              if (rec.id === 'turki' && apiName.includes('بدر التركي')) return true;
+              return false;
+            });
+
+            if (match && Array.isArray(match.moshaf) && match.moshaf.length > 0) {
+              const moshaf = match.moshaf[0];
+              if (moshaf && moshaf.server) {
+                return { ...rec, server: moshaf.server };
+              }
+            }
+            return rec;
+          });
+
+          setRecitersList(updatedReciters);
+        }
+      } catch (err) {
+        console.warn('Failed to load dynamic reciters from API:', err);
+      }
+    };
+
+    fetchLiveReciters();
+  }, []);
+
   // 2. Compute dynamic prayer times and Qibla angle whenever coordinates change
   useEffect(() => {
     computePrayerTimes(latitude, longitude);
-  }, [latitude, longitude]);
+    if (prayerAlertsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+      subscribeToWebPush(latitude, longitude);
+    }
+  }, [latitude, longitude, prayerAlertsEnabled]);
 
   // Fetch Listening History
   useEffect(() => {
@@ -566,8 +1094,8 @@ export default function App() {
           history.push({ id: doc.id, ...doc.data() });
         });
         setListeningHistory(history);
-      }, (err) => {
-        console.warn("Firestore listening history snapshot error (safely handled):", err);
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/listeningHistory`);
       });
       return () => unsubscribe();
     } else {
@@ -709,6 +1237,7 @@ export default function App() {
           const permission = await Notification.requestPermission();
           if (permission === 'granted') {
             triggerToast('تم تفعيل إشعارات المتصفح لصلواتك بنجاح 🔔⭐');
+            await subscribeToWebPush();
           } else if (permission === 'denied') {
             triggerToast('تنبيه: تم رفض الإشعارات. سنعتمد على التنبيهات الصوتية وتنبيهات التطبيق 🔔');
           } else {
@@ -729,6 +1258,7 @@ export default function App() {
     } else {
       setPrayerAlertsEnabled(false);
       localStorage.setItem('prayerAlertsEnabled', 'false');
+      await unsubscribeFromWebPush();
       triggerToast('تم إيقاف تفعيل تنبيهات الصلوات.');
     }
     
@@ -738,63 +1268,37 @@ export default function App() {
         prayerAlertsEnabled: newState,
         updatedAt: serverTimestamp()
       }, { merge: true }).catch(err => {
-        if (err.code !== 'unavailable') {
+        if (err.code === 'permission-denied') {
+          handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+        } else if (err.code !== 'unavailable') {
           console.error("Error updating prayerAlertsEnabled", err);
         }
       });
     }
   };
 
-  const triggerPrayerNotification = (prayerName: string, message: string, key: string) => {
+  const triggerPrayerNotification = async (prayerName: string, message: string, key: string) => {
     // 1. Play default synthesized chime
     playGentleChime();
 
     // 2. Browser standard notification if granted
     if ('Notification' in window && Notification.permission === 'granted') {
-      const title = `🕌 ${prayerName}`;
-      const options = {
-        body: message,
-        silent: true,
-        tag: `prayer-alert-${key}`
-      };
+      try {
+        const title = `🕌 ${prayerName}`;
+        const options = {
+          body: message,
+          silent: true,
+          tag: `prayer-alert-${key}`
+        };
 
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.getRegistration()
-          .then((registration) => {
-            if (registration) {
-              registration.showNotification(title, options)
-                .catch((swErr) => {
-                  console.warn('Failed to show notification via service worker:', swErr);
-                  // Fallback
-                  try {
-                    new Notification(title, options);
-                  } catch (constructErr) {
-                    console.info('Notification constructor fallback failed:', constructErr);
-                  }
-                });
-            } else {
-              // No service worker registered, use constructor
-              try {
-                new Notification(title, options);
-              } catch (constructErr) {
-                console.info('Notification constructor failed (this is expected on some mobile devices without active ServiceWorker):', constructErr);
-              }
-            }
-          })
-          .catch((err) => {
-            console.warn('Error fetching service worker registration, using fallback:', err);
-            try {
-              new Notification(title, options);
-            } catch (constructErr) {
-              console.info('Notification constructor fallback failed:', constructErr);
-            }
-          });
-      } else {
-        try {
-          new Notification(title, options);
-        } catch (err) {
-          console.info('Notification constructor failed on browser with no serviceWorker support:', err);
+        const registration = await navigator.serviceWorker.getRegistration();
+        if (registration && registration.showNotification) {
+          await registration.showNotification(title, options);
+        } else {
+          console.warn('ServiceWorker registration not found, skipping native notification');
         }
+      } catch (err) {
+        console.error('Failed to show native browser notification:', err);
       }
     }
 
@@ -952,132 +1456,6 @@ export default function App() {
   }, []);
 
   // 3. Audio Player handlers
-  const handlePlaybackError = useCallback((e?: Event) => {
-    console.warn("Audio element failed to load or play source:", e);
-    console.log("Current playbackRetryRef:", playbackRetryRef.current);
-    
-    const retryState = playbackRetryRef.current;
-    if (retryState && !retryState.isRetrying) {
-      retryState.isRetrying = true;
-      const surah = SURAHS.find(s => s.id === retryState.surahId);
-      const reciter = RECITERS.find(r => r.id === retryState.reciterId);
-      
-      if (surah) {
-        const nextAttempt = retryState.attempt + 1;
-        const currentPos = audioRef.current ? audioRef.current.currentTime : (retryState.lastPosition || 0);
-        
-        if (nextAttempt === 1) {
-          // Fallback Stage 1: Try using download.mp3quran.net instead of the specific server
-          const origServer = reciter ? reciter.server : "https://server8.mp3quran.net/afs/";
-          let fallbackServer = origServer;
-          try {
-            if (origServer.includes("mp3quran.net")) {
-              const urlObj = new URL(origServer);
-              fallbackServer = `https://download.mp3quran.net${urlObj.pathname}`;
-            }
-          } catch (err) {
-            console.warn("Error parsing reciter server URL:", err);
-          }
-          const fallbackUrl = `${fallbackServer}${surah.file}.mp3`;
-          
-          console.log(`Playback fallback stage 1: Trying download.mp3quran.net -> ${fallbackUrl}`);
-          playbackRetryRef.current = {
-            ...retryState,
-            attempt: nextAttempt,
-            lastPosition: currentPos,
-            isRetrying: false // Reset
-          };
-          
-          triggerToast('جاري التحميل من خادم بديل... 🔄');
-          
-          if (audioRef.current) {
-            audioRef.current.src = fallbackUrl;
-            audioRef.current.load();
-            if (currentPos > 0) {
-              audioRef.current.currentTime = currentPos;
-            }
-            audioRef.current.play().then(() => {
-              setIsPlaying(true);
-            }).catch(err => {
-              console.warn("Playback fallback stage 1 failed to play:", err);
-              // Retry the error handling if it fails to play
-              playbackRetryRef.current = { ...retryState, isRetrying: false };
-              handlePlaybackError();
-            });
-          }
-          return;
-        } else if (nextAttempt === 2) {
-          // Fallback Stage 2: Try using Islamic Network CDN for the specific reciter
-          const reciterId = reciter ? reciter.id : "afs";
-          const mappedEdition = ISLAMIC_NETWORK_MAP[reciterId] || "ar.alafasy";
-          const surahIdPadded = String(surah.id).padStart(3, '0');
-          const fallbackUrl = `https://cdn.islamic.network/quran/audio-surah/128/${mappedEdition}/${surahIdPadded}.mp3`;
-          
-          console.log(`Playback fallback stage 2: Trying Islamic Network CDN -> ${fallbackUrl}`);
-          playbackRetryRef.current = {
-            ...retryState,
-            attempt: nextAttempt,
-            lastPosition: currentPos,
-            isRetrying: false // Reset
-          };
-          
-          triggerToast('جاري التحميل من خادم السحاب البديل... 🌐🔄');
-          
-          if (audioRef.current) {
-            audioRef.current.src = fallbackUrl;
-            audioRef.current.load();
-            if (currentPos > 0) {
-              audioRef.current.currentTime = currentPos;
-            }
-            audioRef.current.play().then(() => {
-              setIsPlaying(true);
-            }).catch(err => {
-              console.warn("Playback fallback stage 2 failed to play:", err);
-              playbackRetryRef.current = { ...retryState, isRetrying: false };
-              handlePlaybackError();
-            });
-          }
-          return;
-        } else if (nextAttempt === 3) {
-          // Fallback Stage 3: Try Alafasy on Islamic Network CDN (highly guaranteed fallback)
-          const surahIdPadded = String(surah.id).padStart(3, '0');
-          const fallbackUrl = `https://cdn.islamic.network/quran/audio-surah/128/ar.alafasy/${surahIdPadded}.mp3`;
-          
-          console.log(`Playback fallback stage 3: Trying Alafasy on Islamic Network CDN -> ${fallbackUrl}`);
-          playbackRetryRef.current = {
-            ...retryState,
-            attempt: nextAttempt,
-            lastPosition: currentPos,
-            isRetrying: false // Reset
-          };
-          
-          triggerToast('جاري التشغيل عبر قارئ الطوارئ البديل (العفاسي)... 🎧⚡');
-          
-          if (audioRef.current) {
-            audioRef.current.src = fallbackUrl;
-            audioRef.current.load();
-            if (currentPos > 0) {
-              audioRef.current.currentTime = currentPos;
-            }
-            audioRef.current.play().then(() => {
-              setIsPlaying(true);
-            }).catch(err => {
-              console.warn("Playback fallback stage 3 failed to play:", err);
-            });
-          }
-          return;
-        }
-      }
-    }
-    
-    setIsPlaying(false);
-    triggerToast('تنبيه: تعذر تشغيل الصوت من كافة الخوادم المتاحة. يرجى محاولة قارئ آخر أو التحقق من اتصالك بالإنترنت 🌐⚠️');
-  }, [triggerToast]);
-
-  useEffect(() => {
-    retryFunctionRef.current = handlePlaybackError;
-  }, [handlePlaybackError]);
-
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -1116,7 +1494,9 @@ export default function App() {
             lastPosition: audioRef.current.currentTime,
             lastListenedAt: serverTimestamp()
           }, { merge: true }).catch(err => {
-            if (err.code !== 'unavailable') {
+            if (err.code === 'permission-denied') {
+              handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}/listeningHistory/${currentPlayingSurah.id}`);
+            } else if (err.code !== 'unavailable') {
               console.error("Error saving listening history", err);
             }
           });
@@ -1124,7 +1504,9 @@ export default function App() {
     };
 
     const handleAudioError = (e: Event) => {
-        handlePlaybackError(e);
+      console.warn("Audio element failed to load or play source:", e);
+      setIsPlaying(false);
+      triggerToast('تنبيه: تعذر تحميل الملف الصوتي من الخادم. يرجى التحقق من اتصالك بالإنترنت 🌐⚠️');
     };
 
     audio.addEventListener('timeupdate', handleTimeUpdate);
@@ -1140,7 +1522,7 @@ export default function App() {
       audio.removeEventListener('pause', handlePause);
       audio.removeEventListener('error', handleAudioError);
     };
-  }, [user, currentPlayingSurah, currentAudioAdhkar, isAudioLoop, selectedReciter, handlePlaybackError]);
+  }, [user, currentPlayingSurah, currentAudioAdhkar, isAudioLoop]);
 
   // Sync volume & mute
   useEffect(() => {
@@ -1171,7 +1553,6 @@ export default function App() {
       audioRef.current.src = "";
     }
     activeAudioIdRef.current = null;
-    playbackRetryRef.current = null;
     setIsPlaying(false);
     setCurrentPlayingSurah(null);
     setCurrentAudioAdhkar(null);
@@ -1203,7 +1584,6 @@ export default function App() {
     
     const audioId = `adhkar-${adhkar.id}`;
     activeAudioIdRef.current = audioId;
-    playbackRetryRef.current = null;
 
     audioRef.current.src = adhkar.audioUrl;
     audioRef.current.load();
@@ -1231,21 +1611,22 @@ export default function App() {
     if (!audioRef.current) return;
     
     const audioId = `surah-${surah.id}`;
+    
+    // Toggle play/pause if user clicks on currently active surah
+    if (currentPlayingSurah?.id === surah.id && startFromPosition === undefined) {
+      togglePlay();
+      return;
+    }
+
     activeAudioIdRef.current = audioId;
 
     // Stop any audio adhkar
     setCurrentAudioAdhkar(null);
     
-    // Reset/initialize retry tracking state
-    playbackRetryRef.current = {
-      surahId: surah.id,
-      reciterId: selectedReciter.id,
-      attempt: 0,
-      lastPosition: startFromPosition
-    };
-
-    // Construct full URL
-    const audioUrl = `${selectedReciter.server}${surah.file}.mp3`;
+    // Construct full URL using our secure CORS-free audio proxy
+    const serverBase = selectedReciter.server.endsWith('/') ? selectedReciter.server : `${selectedReciter.server}/`;
+    const directUrl = `${serverBase}${surah.file}.mp3`;
+    const audioUrl = `/api/quran/audio?url=${encodeURIComponent(directUrl)}`;
     
     audioRef.current.src = audioUrl;
     audioRef.current.load();
@@ -1264,7 +1645,9 @@ export default function App() {
             position = historyDoc.data().lastPosition || 0;
           }
         } catch (err: any) {
-          if (err.code !== 'unavailable') {
+          if (err.code === 'permission-denied') {
+            handleFirestoreError(err, OperationType.GET, `users/${user.uid}/listeningHistory/${surah.id}`);
+          } else if (err.code !== 'unavailable') {
             console.error("Error fetching listening history", err);
           }
         }
@@ -1297,7 +1680,6 @@ export default function App() {
           console.log("Surah playback interrupted by a new load request.");
         } else {
           console.error("Playback failed initially:", error);
-          retryFunctionRef.current?.();
           setIsPlaying(false);
         }
       });
@@ -1305,17 +1687,15 @@ export default function App() {
   };
 
   const changeReciter = (reciterId: string) => {
-    const reciter = RECITERS.find(r => r.id === reciterId);
+    const reciter = recitersList.find(r => r.id === reciterId) || RECITERS.find(r => r.id === reciterId);
     if (!reciter) return;
     setSelectedReciter(reciter);
     
-    // If a surah is currently playing, switch the stream URL dynamically
+    // If a surah is currently playing, switch the stream URL dynamically using our proxy
     if (currentPlayingSurah) {
-      if (playbackRetryRef.current) {
-        playbackRetryRef.current.reciterId = reciterId;
-        playbackRetryRef.current.attempt = 0; // Reset attempt count for new reciter
-      }
-      const audioUrl = `${reciter.server}${currentPlayingSurah.file}.mp3`;
+      const serverBase = reciter.server.endsWith('/') ? reciter.server : `${reciter.server}/`;
+      const directUrl = `${serverBase}${currentPlayingSurah.file}.mp3`;
+      const audioUrl = `/api/quran/audio?url=${encodeURIComponent(directUrl)}`;
       if (audioRef.current) {
         const wasPlaying = isPlaying;
         audioRef.current.src = audioUrl;
@@ -1540,6 +1920,7 @@ ${dua.reference}
           if (item.count <= 0) return item;
           
           const newCount = item.count - 1;
+          recordDhikrCount(1);
           if (newCount === 0) {
             triggerToast('تمت قراءة الذكر كاملاً وجزاك الله كل خير ✨');
             if (navigator.vibrate) {
@@ -1696,6 +2077,8 @@ ${dua.reference}
     const newTotal = totalTasbihCount + 1;
     setTotalTasbihCount(newTotal);
     localStorage.setItem('total_tasbih_count', newTotal.toString());
+    
+    recordDhikrCount(1);
     
     playClickSound();
 
@@ -2026,12 +2409,14 @@ ${dua.reference}
                 alt="الذاكرون" 
                 className="w-full h-full object-cover hover:scale-110 transition-transform duration-300"
                 referrerPolicy="no-referrer"
+                loading="lazy"
               />
             </div>
-            {/* Golden Badge styled precisely like the screenshot */}
-            <div className="bg-gradient-to-r from-[#8C6D1F] via-[#D4AF37] to-[#8C6D1F] text-[#011B12] px-4 py-1.5 rounded-lg text-center flex flex-col justify-center shadow-lg border border-[#D4AF37] select-none font-sans">
-              <span className="text-sm font-black tracking-wide leading-tight">صدقة جارية</span>
-              <span className="text-[10px] font-bold tracking-wider leading-none mt-0.5 opacity-90">ونشر مبارك</span>
+            <div>
+              <h1 className="text-2xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-[#FAF6EE] via-[#D4AF37] to-[#FFF2B2] font-amiri leading-none">
+                الذَّاكِرُون
+              </h1>
+              <p className="text-[10px] text-teal-400 font-bold uppercase tracking-wider mt-1">صدقة جارية ونشر مبارك</p>
             </div>
           </div>
 
@@ -2968,6 +3353,7 @@ ${ev.description}
                     <Quote className="w-6 h-6 animate-pulse" />
                   </div>
                   <div>
+                    <span className="block text-sm text-[#D4AF37] font-medium mb-1">ٱلذَّاكِرُونَ</span>
                     <h3 className="text-2xl font-extrabold text-[#FAF6EE] font-amiri">الحديث النبوي الشريف (حديث اليوم) 📜</h3>
                     <p className="text-xs text-gray-400 font-sans mt-0.5">تأمل هدي المصطفى ﷺ وتعلم سنته العطرة لتضيء دربك وتنشر الخير والمحبة</p>
                   </div>
@@ -3344,6 +3730,7 @@ ${currentHadeeth.benefit}
                                 src={`https://quran.ksu.edu.sa/png_big/${quranPage}.png`}
                                 alt={`صفحة القرآن الكريم رقم ${quranPage}`}
                                 referrerPolicy="no-referrer"
+                                loading="lazy"
                                 className={`max-h-[420px] md:max-h-[580px] w-auto object-contain transition-all duration-300 rounded-lg select-none ${
                                   quranColorFilter === 'sepia'
                                     ? 'sepia brightness-90 contrast-110 saturate-[80%]'
@@ -3507,37 +3894,27 @@ ${currentHadeeth.benefit}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   transition={{ delay: 0.2 }}
-                  className="bg-[#02130F]/80 backdrop-blur-sm border border-[#D4AF37]/25 p-5 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-[0_0_20px_rgba(212,175,55,0.08)] text-right"
+                  className="bg-gradient-to-r from-[#042019] to-[#02130F] border border-[#D4AF37]/20 p-5 rounded-3xl flex flex-col md:flex-row items-center justify-between gap-4 shadow-[0_0_30px_rgba(212,175,55,0.05)]"
                 >
-                  <div className="flex items-center gap-3 w-full sm:w-auto">
-                    <div className="w-10 h-10 rounded-full bg-[#D4AF37]/10 flex items-center justify-center shrink-0 border border-[#D4AF37]/20">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-[#D4AF37]/10 flex items-center justify-center">
                       <Headphones className="w-5 h-5 text-[#D4AF37]" />
                     </div>
-                    <span className="text-sm font-bold text-gray-200 font-sans leading-relaxed">
-                      {i18n.language === 'ar' ? 'اختر القارئ المفضل لديك للاستماع لوردك الصوتي:' : t('quran.listen.reciter_prompt')}
-                    </span>
+                    <span className="text-sm font-bold text-gray-300 font-sans">{t('quran.listen.reciter_prompt')}</span>
                   </div>
-                  <div className="flex items-center gap-2 bg-[#011B12] px-4 py-2.5 rounded-xl border border-[#D4AF37]/15 w-full sm:w-auto justify-between sm:justify-start">
-                    <span className="text-xs font-semibold text-[#D4AF37] whitespace-nowrap">
-                      {i18n.language === 'ar' ? 'القارئ الحالي:' : t('quran.listen.current_reciter')}
-                    </span>
-                    <div className="relative flex items-center">
-                      <select 
-                        value={selectedReciter.id} 
-                        onChange={(e) => changeReciter(e.target.value)}
-                        className="bg-transparent text-[#FAF6EE] text-xs md:text-sm font-bold rounded-lg pl-7 pr-2 py-1.5 focus:outline-none cursor-pointer appearance-none font-sans leading-relaxed"
-                      >
-                        {RECITERS.map((r) => (
-                          <option key={r.id} value={r.id} className="bg-[#02130F] text-[#FAF6EE]">
-                            {i18n.language === 'ar' ? r.name : (r.nameEn || r.name)}
-                          </option>
-                        ))}
-                      </select>
-                      {/* Custom Chevron icon */}
-                      <div className="absolute left-1.5 pointer-events-none text-[#D4AF37]/80 flex items-center">
-                        <ChevronDown className="w-4 h-4" />
-                      </div>
-                    </div>
+                  <div className="flex items-center gap-3 w-full md:w-auto bg-[#02130F] p-2 rounded-2xl border border-white/5">
+                    <span className="text-xs font-semibold text-[#D4AF37] whitespace-nowrap pr-2">{t('quran.listen.current_reciter')}</span>
+                    <select 
+                      value={selectedReciter.id} 
+                      onChange={(e) => changeReciter(e.target.value)}
+                      className="bg-transparent text-[#FAF6EE] text-sm font-bold rounded-xl px-3 py-1.5 focus:outline-none cursor-pointer appearance-none"
+                    >
+                      {recitersList.map((r) => (
+                        <option key={r.id} value={r.id} className="bg-[#02130F]">
+                          {i18n.language === 'ar' ? r.name : (r.nameEn || r.name)}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </motion.div>
 
@@ -3564,7 +3941,7 @@ ${currentHadeeth.benefit}
                 {/* Surah List Grid */}
                 <motion.div 
                   layout
-                  className={`${listenSubTab === 'surahs' ? 'grid' : 'hidden'} grid-cols-1 gap-4 max-w-4xl mx-auto`}
+                  className={`${listenSubTab === 'surahs' ? 'grid' : 'hidden'} grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4`}
                 >
                   <AnimatePresence mode="popLayout">
                     {filteredSurahs.map((surah) => {
@@ -3572,72 +3949,162 @@ ${currentHadeeth.benefit}
                       return (
                         <motion.div 
                           layout
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
+                          initial={{ opacity: 0, scale: 0.95 }}
+                          animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.95 }}
-                          whileHover={{ scale: 1.01, y: -1 }}
+                          whileHover={isCurrentPlaying ? {} : { scale: 1.02, y: -2 }}
                           key={surah.id}
-                          onClick={() => playSurah(surah)}
-                          className={`p-5 md:py-5 md:px-7 rounded-2xl border transition-all cursor-pointer flex items-center justify-between group relative overflow-hidden ${
+                          onClick={() => {
+                            playSurah(surah);
+                          }}
+                          className={`p-5 rounded-3xl border transition-all flex flex-col justify-between group relative overflow-hidden ${
                             isCurrentPlaying 
-                              ? 'bg-[#052F20] border-2 border-[#D4AF37] shadow-[0_0_20px_rgba(212,175,55,0.15)]' 
-                              : 'bg-[#042019]/80 backdrop-blur-sm border-white/5 hover:border-[#D4AF37]/30 hover:bg-[#052a21]'
+                              ? 'col-span-1 sm:col-span-2 md:col-span-2 lg:col-span-2 xl:col-span-2 bg-[#052F20] border-[#D4AF37] shadow-[0_0_25px_rgba(212,175,55,0.15)] ring-1 ring-[#D4AF37]/30' 
+                              : 'bg-[#042019] border-white/5 hover:border-[#D4AF37]/40 hover:bg-[#062c23] cursor-pointer'
                           }`}
                         >
                           {/* Ornamental Background Pattern */}
-                          <div className="absolute inset-0 opacity-[0.02] group-hover:opacity-[0.04] transition-opacity pointer-events-none" 
+                          <div className="absolute inset-0 opacity-[0.03] group-hover:opacity-[0.06] transition-opacity pointer-events-none" 
                             style={{ backgroundImage: 'radial-gradient(circle at 2px 2px, #D4AF37 1px, transparent 0)', backgroundSize: '16px 16px' }}
                           ></div>
                           
                           {isCurrentPlaying && (
-                            <motion.div 
-                              layoutId="activeGlow"
-                              className="absolute inset-0 bg-gradient-to-r from-[#D4AF37]/5 to-transparent pointer-events-none"
-                            />
+                            <div className="absolute inset-0 bg-gradient-to-b from-[#D4AF37]/5 via-transparent to-transparent pointer-events-none" />
                           )}
-                          <div className="flex items-center gap-4 relative z-10">
-                            {/* Round Circle ID Badge */}
-                            <div className={`w-11 h-11 rounded-full flex items-center justify-center font-bold text-sm transition-all border ${
-                              isCurrentPlaying 
-                                ? 'bg-[#D4AF37] text-[#02130F] shadow-lg shadow-[#D4AF37]/25 border-transparent' 
-                                : 'bg-[#02130F] text-amber-200/80 border-[#D4AF37]/15 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
-                            }`}>
-                              {surah.id}
+
+                          {/* Top part: Surah Info */}
+                          <div className={`flex items-center justify-between w-full ${isCurrentPlaying ? 'pb-3 border-b border-[#D4AF37]/15 mb-3' : ''}`}>
+                            <div className="flex items-center gap-3 relative z-10">
+                              <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold font-mono text-sm transition-all border border-[#D4AF37]/10 ${
+                                isCurrentPlaying ? 'bg-[#D4AF37] text-[#02130F] shadow-lg shadow-[#D4AF37]/20 border-transparent' : 'bg-[#02130F] text-amber-200/80 group-hover:bg-[#D4AF37] group-hover:text-[#02130F]'
+                              }`}>
+                                {surah.id}
+                              </div>
+                              <div>
+                                <h4 className={`text-base font-bold font-amiri ${isCurrentPlaying ? 'text-[#FAF6EE]' : 'text-gray-200'}`}>
+                                  {t('quran.listen.surah_prefix')} {surah.name}
+                                </h4>
+                                <span className="text-[10px] text-gray-400 font-mono">
+                                  {surah.englishName} • {surah.verses} {t('quran.listen.ayahs')}
+                                </span>
+                              </div>
                             </div>
-                            <div className="text-right">
-                              <h4 className={`text-base font-bold font-amiri ${isCurrentPlaying ? 'text-[#FAF6EE]' : 'text-gray-200'}`}>
-                                {t('quran.listen.surah_prefix')} {surah.name}
-                              </h4>
-                              <span className="text-xs text-gray-400 font-sans block mt-0.5">
-                                {surah.englishName} • {surah.verses} {i18n.language === 'ar' ? 'آية' : 'ayahs'}
+
+                            <div className="flex items-center gap-2 relative z-10" onClick={(e) => e.stopPropagation()}>
+                              <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full ${
+                                surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300 border border-amber-400/20' : 'bg-teal-400/10 text-teal-300 border border-teal-400/20'
+                              }`}>
+                                {surah.type === 'مكية' ? t('quran.listen.type_meccan') : t('quran.listen.type_medinan')}
                               </span>
+                              <motion.button 
+                                whileTap={{ scale: 0.9 }}
+                                onClick={() => playSurah(surah)}
+                                className={`p-2 rounded-full transition-all cursor-pointer ${
+                                  isCurrentPlaying 
+                                    ? 'bg-[#D4AF37] text-[#02130F] shadow-[0_0_15px_rgba(212,175,55,0.4)]' 
+                                    : 'bg-[#02130F] text-[#D4AF37] group-hover:bg-[#D4AF37] group-hover:text-[#02130F] border border-[#D4AF37]/20 group-hover:border-transparent shadow-[0_0_10px_rgba(0,0,0,0.2)]'
+                                }`}>
+                                {isCurrentPlaying && isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                              </motion.button>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-3 relative z-10">
-                            <span className={`text-[11px] font-bold px-3 py-1 rounded-full ${
-                              surah.type === 'مكية' ? 'bg-amber-400/10 text-amber-300 border border-amber-400/20' : 'bg-teal-400/10 text-teal-300 border border-teal-400/20'
-                            }`}>
-                              {surah.type === 'مكية' ? t('quran.listen.type_meccan') : t('quran.listen.type_medinan')}
-                            </span>
-                            <motion.button 
-                              whileTap={{ scale: 0.9 }}
-                              className={`w-10 h-10 flex items-center justify-center rounded-full transition-all ${
-                                isCurrentPlaying 
-                                  ? 'bg-[#D4AF37] text-[#02130F] shadow-[0_0_15px_rgba(212,175,55,0.4)] border border-[#D4AF37]' 
-                                  : 'bg-[#02130F] text-[#D4AF37] hover:bg-[#D4AF37] hover:text-[#02130F] border border-[#D4AF37]/20 transition-all duration-300 shadow-md'
-                              }`}>
-                              {isCurrentPlaying && isPlaying ? (
-                                <div className="flex items-center gap-1 px-0.5 justify-center">
-                                  <span className="w-0.5 h-2.5 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '0ms', animationDuration: '0.6s' }}></span>
-                                  <span className="w-0.5 h-3.5 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '150ms', animationDuration: '0.8s' }}></span>
-                                  <span className="w-0.5 h-2 bg-[#02130F] rounded-full animate-bounce" style={{ animationDelay: '300ms', animationDuration: '0.5s' }}></span>
+                          {/* Bottom part: Embedded Player Controls (under each Surah) */}
+                          {isCurrentPlaying && (
+                            <motion.div 
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              className="w-full space-y-4 pt-1 relative z-10 font-sans text-right"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {/* Reciter display inside card */}
+                              <div className="flex justify-between items-center text-[10px] text-amber-200/75 bg-[#02130F]/40 p-2 rounded-lg border border-[#D4AF37]/10">
+                                <span>{i18n.language === 'ar' ? 'القارئ الحالي:' : 'Current Reciter:'}</span>
+                                <span className="font-bold text-white">
+                                  {i18n.language === 'ar' ? selectedReciter.name : (selectedReciter.nameEn || selectedReciter.name)}
+                                </span>
+                              </div>
+
+                              {/* Progress Slider */}
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[9px] text-gray-400 font-mono">
+                                  <span>{formatTime(currentTime)}</span>
+                                  <span>{formatTime(duration)}</span>
                                 </div>
-                              ) : (
-                                <Play className="w-4 h-4" />
-                              )}
-                            </motion.button>
-                          </div>
+                                <div 
+                                  className="h-1.5 bg-white/10 rounded-full w-full overflow-hidden cursor-pointer relative hover:h-2 transition-all" 
+                                  onClick={seekAudio}
+                                >
+                                  <div 
+                                    className="h-full bg-gradient-to-r from-amber-500 to-[#D4AF37] rounded-full" 
+                                    style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+
+                              {/* Action Buttons, Volume, Speed */}
+                              <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-white/5">
+                                {/* Left: Skip controls */}
+                                <div className="flex items-center gap-1">
+                                  <button 
+                                    onClick={() => skipTime(-10)}
+                                    className="p-1.5 rounded-lg text-gray-400 hover:text-amber-300 hover:bg-white/5 transition-all cursor-pointer active:scale-90"
+                                    title={i18n.language === 'ar' ? 'رجوع 10 ثوانٍ' : 'Rewind 10s'}
+                                  >
+                                    <SkipBack className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button 
+                                    onClick={togglePlay}
+                                    className="p-2 rounded-full bg-[#D4AF37] text-[#02130F] hover:bg-amber-500 transition-all cursor-pointer active:scale-95 animate-pulse-slow"
+                                  >
+                                    {isPlaying ? <Pause className="w-3.5 h-3.5 fill-[#02130F]" /> : <Play className="w-3.5 h-3.5 fill-[#02130F] ml-0.5" />}
+                                  </button>
+                                  <button 
+                                    onClick={() => skipTime(10)}
+                                    className="p-1.5 rounded-lg text-gray-400 hover:text-amber-300 hover:bg-white/5 transition-all cursor-pointer active:scale-90"
+                                    title={i18n.language === 'ar' ? 'تقديم 10 ثوانٍ' : 'Forward 10s'}
+                                  >
+                                    <SkipForward className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                {/* Center: Playback Speed */}
+                                <div className="flex items-center gap-1 bg-[#011B12]/80 px-2 py-1 rounded-lg border border-[#D4AF37]/10 text-[9px]">
+                                  <span className="text-gray-400">{i18n.language === 'ar' ? 'السرعة' : 'Speed'}</span>
+                                  <select 
+                                    value={playbackRate}
+                                    onChange={(e) => setPlaybackRate(parseFloat(e.target.value))}
+                                    className="bg-transparent text-[#D4AF37] font-bold focus:outline-none cursor-pointer"
+                                  >
+                                    <option value="0.75" className="bg-[#02130F]">0.75x</option>
+                                    <option value="1.0" className="bg-[#02130F]">1.0x</option>
+                                    <option value="1.25" className="bg-[#02130F]">1.25x</option>
+                                    <option value="1.5" className="bg-[#02130F]">1.5x</option>
+                                    <option value="2.0" className="bg-[#02130F]">2.0x</option>
+                                  </select>
+                                </div>
+
+                                {/* Right: Volume bar */}
+                                <div className="flex items-center gap-1.5">
+                                  <button 
+                                    onClick={() => setIsMuted(!isMuted)} 
+                                    className="text-gray-400 hover:text-[#FAF6EE] cursor-pointer p-1 rounded-md hover:bg-white/5 transition-colors"
+                                  >
+                                    {isMuted || volume === 0 ? <VolumeX className="w-3.5 h-3.5 text-red-400" /> : <Volume2 className="w-3.5 h-3.5 text-[#D4AF37]" />}
+                                  </button>
+                                  <input 
+                                    type="range" 
+                                    min="0" 
+                                    max="1" 
+                                    step="0.05" 
+                                    value={volume}
+                                    onChange={(e) => { setVolume(parseFloat(e.target.value)); setIsMuted(false); }}
+                                    className="w-12 accent-[#D4AF37] bg-white/10 h-1 rounded-full cursor-pointer hover:accent-amber-400 transition-all" 
+                                  />
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
                         </motion.div>
                       );
                     })}
@@ -4354,6 +4821,400 @@ ${currentHadeeth.benefit}
                     <RotateCcw className="w-3 h-3" />
                     تصفير أذكار القسم الحالي
                   </button>
+                )}
+              </div>
+            </div>
+
+            {/* Daily Dhikr Analytics Dashboard */}
+            <div className="bg-[#031d16]/80 backdrop-blur-md rounded-3xl border border-[#D4AF37]/25 p-5 md:p-6 shadow-xl transition-all relative overflow-hidden">
+              {/* Background elegant pattern */}
+              <div className="absolute top-0 right-0 w-48 h-48 bg-[#D4AF37]/5 rounded-full blur-3xl -z-10 pointer-events-none"></div>
+              <div className="absolute bottom-0 left-0 w-48 h-48 bg-emerald-500/5 rounded-full blur-3xl -z-10 pointer-events-none"></div>
+
+              <div className="flex justify-between items-center border-b border-[#D4AF37]/15 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#D4AF37]/10 flex items-center justify-center text-[#D4AF37]">
+                    <BarChart3 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-bold text-[#FAF6EE] font-sans">
+                      {i18n.language === 'ar' ? 'لوحة إحصائيات الذاكرين' : 'Dhikr Statistics Dashboard'}
+                    </h3>
+                    <p className="text-[11px] text-gray-400 font-sans">
+                      {i18n.language === 'ar' ? 'تتبع وردك اليومي وبناء سلسلة الاستمرار بالذكر الحكيم' : 'Track your daily wird and build a streak of consistent remembrance'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className={`px-3 py-1 rounded-full text-[10px] font-bold border ${dhikrStats.badgeColor} font-sans flex items-center gap-1.5`}>
+                    <Award className="w-3.5 h-3.5" />
+                    {i18n.language === 'ar' ? dhikrStats.levelTitle : dhikrStats.levelTitleEn}
+                  </span>
+
+                  <button 
+                    onClick={() => setShowDhikrDashboard(!showDhikrDashboard)}
+                    className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer"
+                    title={showDhikrDashboard ? (i18n.language === 'ar' ? 'طي' : 'Collapse') : (i18n.language === 'ar' ? 'توسيع' : 'Expand')}
+                  >
+                    {showDhikrDashboard ? (
+                      <ChevronUp className="w-4 h-4" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {showDhikrDashboard && (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-5">
+                  {/* Chart section */}
+                  <div className="lg:col-span-7 bg-[#02130F]/40 p-4 rounded-2xl border border-white/5 flex flex-col justify-between min-h-[250px] lg:min-h-[280px]">
+                    <div className="flex justify-between items-center mb-4">
+                      <span className="text-xs font-bold text-gray-300 font-sans flex items-center gap-1.5">
+                        <TrendingUp className="w-3.5 h-3.5 text-[#D4AF37]" />
+                        {i18n.language === 'ar' ? 'معدل الذكر لأخر 7 أيام' : 'Remembrance rate for the last 7 days'}
+                      </span>
+                      <span className="text-[10px] font-mono text-gray-400">
+                        {i18n.language === 'ar' ? 'تحديث تلقائي' : 'Auto synced'}
+                      </span>
+                    </div>
+
+                    <div className="w-full h-44 md:h-52 font-mono text-xs">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart
+                          data={dhikrStats.chartData}
+                          margin={{ top: 10, right: 5, left: -25, bottom: 0 }}
+                        >
+                          <defs>
+                            <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#D4AF37" stopOpacity={0.4}/>
+                              <stop offset="95%" stopColor="#D4AF37" stopOpacity={0.0}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(212, 175, 55, 0.05)" />
+                          <XAxis 
+                            dataKey="name" 
+                            stroke="#888" 
+                            fontSize={10}
+                            tickLine={false}
+                          />
+                          <YAxis 
+                            stroke="#888" 
+                            fontSize={10}
+                            tickLine={false}
+                            axisLine={false}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: '#02130F',
+                              borderColor: 'rgba(212, 175, 55, 0.3)',
+                              borderRadius: '12px',
+                              color: '#FAF6EE',
+                              fontSize: '11px',
+                              fontFamily: 'sans-serif'
+                            }}
+                            labelStyle={{ color: '#D4AF37', fontWeight: 'bold' }}
+                          />
+                          <Area 
+                            type="monotone" 
+                            dataKey="count" 
+                            stroke="#D4AF37" 
+                            strokeWidth={2.5}
+                            fillOpacity={1} 
+                            fill="url(#colorCount)" 
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  {/* Stats Cards & Motivation section */}
+                  <div className="lg:col-span-5 flex flex-col justify-between gap-4">
+                    {/* BENTO STATS GRID */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Stat 1: Today's Count */}
+                      <div className="bg-[#02130F]/40 p-3.5 rounded-2xl border border-white/5 flex flex-col justify-between hover:border-[#D4AF37]/20 transition-all group">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-400 font-sans">{i18n.language === 'ar' ? 'أذكار اليوم' : "Today's Dhikr"}</span>
+                          <span className="w-6 h-6 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xs">📿</span>
+                        </div>
+                        <div className="mt-2.5">
+                          <span className="text-2xl font-black text-[#FAF6EE] font-mono">{dhikrStats.todayCount.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 block font-sans mt-0.5">
+                            {i18n.language === 'ar' ? 'تسبيحة / ذكر' : 'chants'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Stat 2: Streak */}
+                      <div className="bg-[#02130F]/40 p-3.5 rounded-2xl border border-white/5 flex flex-col justify-between hover:border-orange-500/20 transition-all group">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-400 font-sans">{i18n.language === 'ar' ? 'سلسلة الذكر' : 'Remembrance Streak'}</span>
+                          <Flame className={`w-4 h-4 ${dhikrStats.streak > 0 ? 'text-orange-500 animate-pulse' : 'text-gray-500'}`} />
+                        </div>
+                        <div className="mt-2.5">
+                          <span className="text-2xl font-black text-[#FAF6EE] font-mono">{dhikrStats.streak.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 block font-sans mt-0.5">
+                            {i18n.language === 'ar' ? 'أيام متتالية 🔥' : 'consecutive days 🔥'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Stat 3: Daily Average */}
+                      <div className="bg-[#02130F]/40 p-3.5 rounded-2xl border border-white/5 flex flex-col justify-between hover:border-blue-500/20 transition-all group">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-400 font-sans">{i18n.language === 'ar' ? 'المعدل اليومي' : 'Daily Average'}</span>
+                          <TrendingUp className="w-4 h-4 text-blue-400" />
+                        </div>
+                        <div className="mt-2.5">
+                          <span className="text-2xl font-black text-[#FAF6EE] font-mono">{dhikrStats.dailyAverage.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 block font-sans mt-0.5">
+                            {i18n.language === 'ar' ? 'ذكر يومياً' : 'chants/day'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Stat 4: Grand Total */}
+                      <div className="bg-[#02130F]/40 p-3.5 rounded-2xl border border-white/5 flex flex-col justify-between hover:border-yellow-500/20 transition-all group">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] text-gray-400 font-sans">{i18n.language === 'ar' ? 'الإجمالي العام' : 'Grand Total'}</span>
+                          <Award className="w-4 h-4 text-yellow-400" />
+                        </div>
+                        <div className="mt-2.5">
+                          <span className="text-2xl font-black text-[#FAF6EE] font-mono">{dhikrStats.grandTotal.toLocaleString()}</span>
+                          <span className="text-[10px] text-gray-400 block font-sans mt-0.5">
+                            {i18n.language === 'ar' ? 'تسبيحة وذكر 🌟' : 'total chants 🌟'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Progress to Next Level Goal */}
+                    <div className="bg-[#02130F]/40 p-4 rounded-2xl border border-white/5">
+                      <div className="flex justify-between text-[11px] mb-1.5 font-sans">
+                        <span className="text-gray-400">
+                          {i18n.language === 'ar' ? 'الهدف القادم' : 'Next Goal'}: <strong className="text-white">{dhikrStats.nextGoal}</strong>
+                        </span>
+                        <span className="text-[#D4AF37] font-bold">
+                          {Math.min(100, Math.round((dhikrStats.todayCount / dhikrStats.nextGoal) * 100))}%
+                        </span>
+                      </div>
+
+                      <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
+                        <motion.div 
+                          className="h-full bg-[#D4AF37]" 
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min(100, (dhikrStats.todayCount / dhikrStats.nextGoal) * 100)}%` }}
+                          transition={{ duration: 0.8, ease: 'easeOut' }}
+                        />
+                      </div>
+
+                      <p className="text-[10px] text-gray-400 mt-2 font-sans leading-relaxed">
+                        {i18n.language === 'ar' ? (
+                          <>
+                            {dhikrStats.todayCount >= dhikrStats.nextGoal ? (
+                              <span>🎉 تهانينا! لقد تجاوزت هدفك اليومي وتألقت روحانياً، استمر في الارتقاء بمقامك المبارك.</span>
+                            ) : (
+                              <span>يتبقّى لك <strong className="text-white">{dhikrStats.nextGoal - dhikrStats.todayCount}</strong> تسبيحة للوصول للمستوى التالي <strong>({dhikrStats.levelTitle})</strong>.</span>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            {dhikrStats.todayCount >= dhikrStats.nextGoal ? (
+                              <span>🎉 Congratulations! You reached your goal for today. Keep building your daily habit.</span>
+                            ) : (
+                              <span>Only <strong className="text-white">{dhikrStats.nextGoal - dhikrStats.todayCount}</strong> more to reach the next milestone.</span>
+                            )}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Custom Dhikr Widget for Intermediate Times */}
+            <div className="bg-[#031d16]/60 backdrop-blur-md rounded-3xl border border-[#D4AF37]/20 p-5 md:p-6 shadow-xl space-y-5 transition-all relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-32 h-32 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none"></div>
+              
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-[#D4AF37]/10 pb-4">
+                <div>
+                  <h3 className="text-lg font-bold text-[#FAF6EE] font-sans flex items-center gap-2">
+                    <span className="text-[#D4AF37]">✨</span>
+                    {i18n.language === 'ar' ? 'أذكاري الخاصة للأوقات البينية' : 'My Custom Dhikr for Spare Moments'}
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-0.5 font-sans">
+                    {i18n.language === 'ar' 
+                      ? 'أضف أذكاراً مخصصة تلازمك في أوقاتك الفائضة، لتعمر لسانك بذكر الله بنقرة واحدة سريعة.' 
+                      : 'Add personalized dhikrs for spare moments to keep your tongue busy in the remembrance of Allah.'}
+                  </p>
+                </div>
+
+                {customDhikrList.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (window.confirm(i18n.language === 'ar' ? 'هل تريد تصفير جميع العدادات المخصصة؟' : 'Are you sure you want to reset all custom counters?')) {
+                        const updated = customDhikrList.map(item => ({ ...item, count: 0 }));
+                        setCustomDhikrList(updated);
+                        localStorage.setItem('custom_dhikr_list', JSON.stringify(updated));
+                        triggerToast(i18n.language === 'ar' ? 'تم تصفير جميع عداداتك الخاصة 🔄' : 'All custom counters reset');
+                        if (user) {
+                          setDoc(doc(db, 'users', user.uid), { customDhikrList: updated, updatedAt: serverTimestamp() }, { merge: true }).catch(err => {
+                            handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
+                          });
+                        }
+                      }
+                    }}
+                    className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-400 rounded-xl text-[10px] font-bold transition-all flex items-center gap-1.5 font-sans cursor-pointer active:scale-95"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    {i18n.language === 'ar' ? 'تصفير كافة العدادات' : 'Reset All Counters'}
+                  </button>
+                )}
+              </div>
+
+              {/* Add Custom Dhikr Form & Presets */}
+              <div className="space-y-4 font-sans">
+                {/* Input row */}
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="flex-grow relative">
+                    <input
+                      type="text"
+                      value={newCustomDhikrText}
+                      onChange={(e) => setNewCustomDhikrText(e.target.value)}
+                      placeholder={i18n.language === 'ar' ? 'اكتب ذكراً أو دعاءً مخصصاً هنا...' : 'Write custom dhikr or prayer here...'}
+                      maxLength={100}
+                      className="w-full bg-[#02130F]/70 border border-[#D4AF37]/25 rounded-2xl py-3 px-4 text-xs text-[#FAF6EE] focus:outline-none focus:border-[#D4AF37] placeholder-gray-500 transition-all focus:ring-1 focus:ring-[#D4AF37]/30"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          addCustomDhikr(newCustomDhikrText);
+                        }
+                      }}
+                    />
+                    {newCustomDhikrText && (
+                      <button
+                        onClick={() => setNewCustomDhikrText('')}
+                        className="absolute left-3 top-3.5 text-[10px] text-gray-500 hover:text-white"
+                      >
+                        {i18n.language === 'ar' ? 'مسح' : 'Clear'}
+                      </button>
+                    )}
+                  </div>
+                  
+                  <button
+                    onClick={() => addCustomDhikr(newCustomDhikrText)}
+                    disabled={!newCustomDhikrText.trim()}
+                    className={`px-6 py-3 rounded-2xl text-xs font-bold font-sans flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      newCustomDhikrText.trim()
+                        ? 'bg-[#D4AF37] text-[#02130F] hover:bg-amber-500 font-extrabold shadow-lg shadow-[#D4AF37]/15 active:scale-95'
+                        : 'bg-white/5 text-gray-500 border border-white/5 cursor-not-allowed'
+                    }`}
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>{i18n.language === 'ar' ? 'إضافة ذكر' : 'Add Dhikr'}</span>
+                  </button>
+                </div>
+
+                {/* Quick suggestions pills */}
+                <div className="space-y-2">
+                  <span className="text-[10px] text-gray-400 font-bold block">
+                    {i18n.language === 'ar' ? '💡 إضافة سريعة بنقرة واحدة:' : '💡 1-Click Fast Presets:'}
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      'الحمد لله حمداً كثيراً',
+                      'سبحان الله وبحمده',
+                      'لا حول ولا قوة إلا بالله',
+                      'أستغفر الله العظيم',
+                      'لا إله إلا الله',
+                      'اللهم صلِّ على محمد'
+                    ].map((presetText) => {
+                      // Check if already exists in the list to avoid double addition
+                      const alreadyInList = customDhikrList.some(item => item.text === presetText);
+                      return (
+                        <button
+                          key={presetText}
+                          disabled={alreadyInList}
+                          onClick={() => addCustomDhikr(presetText)}
+                          className={`px-3 py-1.5 rounded-full text-[10px] border transition-all duration-300 font-sans cursor-pointer ${
+                            alreadyInList
+                              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400/50 cursor-not-allowed'
+                              : 'bg-[#02130F]/45 border-[#D4AF37]/15 text-gray-300 hover:text-[#D4AF37] hover:border-[#D4AF37]/30 hover:bg-[#042019]'
+                          }`}
+                          title={alreadyInList ? (i18n.language === 'ar' ? 'مضاف بالفعل' : 'Already added') : ''}
+                        >
+                          {presetText}
+                          {!alreadyInList && <span className="mr-1 text-emerald-400 font-bold">+</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Custom Dhikrs List Grid */}
+              <div className="mt-5">
+                {customDhikrList.length === 0 ? (
+                  <div className="text-center py-8 bg-[#02130F]/20 rounded-2xl border border-white/5">
+                    <p className="text-xs text-gray-500 font-sans">
+                      {i18n.language === 'ar' ? 'لم تقم بإضافة أي أذكار مخصصة بعد. استخدم الحقل أعلاه لبناء وردك الخاص.' : 'No custom dhikrs added yet. Use the input above to build your own.'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {customDhikrList.map((item) => (
+                      <div
+                        key={item.id}
+                        className="bg-[#02130F]/45 border border-white/5 hover:border-[#D4AF37]/35 rounded-2xl p-4 flex items-center justify-between gap-3 group/card transition-all duration-300 relative overflow-hidden"
+                      >
+                        {/* Decorative background flare */}
+                        <div className="absolute top-0 right-0 w-16 h-16 bg-[#D4AF37]/2 rounded-full blur-xl pointer-events-none group-hover/card:bg-[#D4AF37]/5 transition-colors"></div>
+
+                        {/* Dhikr text and quick reset/delete controls */}
+                        <div className="flex-grow flex flex-col justify-between h-full min-w-0">
+                          <h4 className="text-xs font-bold text-[#FAF6EE] font-amiri leading-relaxed truncate-2-lines pr-1" title={item.text}>
+                            {item.text}
+                          </h4>
+                          
+                          <div className="flex items-center gap-3 mt-3 opacity-60 group-hover/card:opacity-100 transition-opacity">
+                            {/* Reset Specific Zikr */}
+                            <button
+                              onClick={() => resetCustomDhikr(item.id)}
+                              className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-amber-400 transition-all cursor-pointer"
+                              title={i18n.language === 'ar' ? 'تصفير عداد الذكر' : 'Reset counter'}
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                            </button>
+                            {/* Delete Zikr */}
+                            <button
+                              onClick={() => deleteCustomDhikr(item.id)}
+                              className="p-1.5 rounded-lg bg-red-500/5 hover:bg-red-500/15 text-gray-500 hover:text-red-400 transition-all cursor-pointer"
+                              title={i18n.language === 'ar' ? 'حذف الذكر' : 'Delete'}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Large, beautiful increment tapping button */}
+                        <div className="flex-shrink-0 flex flex-col items-center justify-center">
+                          <motion.button
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={() => incrementCustomDhikr(item.id)}
+                            className="w-14 h-14 rounded-full bg-gradient-to-br from-[#042019] to-[#01140F] border border-[#D4AF37]/30 hover:border-[#D4AF37] flex flex-col items-center justify-center shadow-lg transition-all text-[#FAF6EE] cursor-pointer group/btn"
+                          >
+                            <span className="text-xs font-black font-mono leading-none group-hover/btn:text-[#D4AF37] transition-colors">{item.count}</span>
+                            <span className="text-[7px] text-[#D4AF37]/70 font-sans mt-0.5 group-hover/btn:scale-110 transition-all">
+                              {i18n.language === 'ar' ? 'كرّر' : 'Tap'}
+                            </span>
+                          </motion.button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>

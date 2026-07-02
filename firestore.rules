@@ -42,6 +42,10 @@ service cloud.firestore {
         && (
           !('totalTasbihCount' in data) ||
           data.totalTasbihCount is number
+        )
+        && (
+          !('customDhikrList' in data) ||
+          data.customDhikrList is list
         );
     }
 
@@ -67,20 +71,22 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().email == existing().email &&
           incoming().diff(existing()).affectedKeys().hasOnly([
-            'email',
             'prayerAlertsEnabled', 
             'totalTasbihCount', 
-            'updatedAt'
+            'updatedAt',
+            'customDhikrList'
           ])
         );
 
       allow delete: if false;
+    }
 
-      match /listeningHistory/{historyId} {
-        allow read: if isSignedIn() && request.auth.uid == userId;
-        allow write: if isSignedIn() && request.auth.uid == userId
-          && isValidId(historyId);
-      }
+    match /users/{userId}/listeningHistory/{historyId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId}/dhikrHistory/{historyId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
     }
   }
 }
