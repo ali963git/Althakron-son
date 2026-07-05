@@ -1,10 +1,10 @@
 {
-  "projectId": "althakron-8858c",
-  "appId": "1:460947924016:web:8f8f66c30b14e05f3379f5",
-  "apiKey": "AIzaSyA6R9Ix77RqU9DTfi4G0wWWpMIvEshEVWE",
-  "authDomain": "althakron-8858c.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-87324622-ee7e-4787-b962-c0b9219a9562",
-  "storageBucket": "althakron-8858c.firebasestorage.app",
-  "messagingSenderId": "460947924016",
-  "measurementId": ""
+  "apiKey": "AIzaSyDummyKeyForTemplate",
+  "authDomain": "althakron-son.firebaseapp.com",
+  "projectId": "althakron-son",
+  "storageBucket": "althakron-son.appspot.com",
+  "messagingSenderId": "123456789",
+  "appId": "1:123456789:web:abcdef123456",
+  "measurementId": "G-XXXXXXXXXX",
+  "firestoreDatabaseId": "(default)"
 }

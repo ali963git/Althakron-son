@@ -3,9 +3,13 @@
 @theme {
   --font-cairo: "Cairo", "sans-serif";
   --font-amiri: "Amiri", "serif";
+  --color-emerald-deep: #02130F;
+  --color-gold-primary: #D4AF37;
+  --color-gold-light: #E6DFD3;
+  --color-emerald-surface: #0A2E22;
+  --color-emerald-border: #1A4D3A;
 }
 
-/* Custom scrollbars and glowing animations to reinforce the premium emerald theme */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -17,17 +21,46 @@
   background: #D4AF37;
   border-radius: 10px;
 }
-
-@keyframes spin-slow {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+::-webkit-scrollbar-thumb:hover {
+  background: #E6DFD3;
 }
 
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 .animate-spin-slow {
   animation: spin-slow 20s linear infinite;
 }
 
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+}
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes pulse-gold {
+  0%, 100% { box-shadow: 0 0 5px rgba(212, 175, 55, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(212, 175, 55, 0.6); }
+}
+.animate-pulse-gold {
+  animation: pulse-gold 2s ease-in-out infinite;
+}
+
+.quran-text {
+  font-family: 'Amiri', serif;
+  line-height: 2.5;
+  font-size: 1.35rem;
+  word-spacing: 0.15em;
+}
+
+[dir="rtl"] {
+  text-align: right;
+}
+
+::selection {
+  background: rgba(212, 175, 55, 0.3);
+  color: #E6DFD3;
+}

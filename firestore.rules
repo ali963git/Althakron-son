@@ -1,92 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 1. Global Safety Net
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Primitive Helpers
-    function isSignedIn() {
-      return request.auth != null;
-    }
-    
-    function isVerified() {
-      // Allow access if email is verified. Adjust if app allows unverified emails.
-      // Wait, in this simple web app without explicit email setup, we shouldn't mandate email_verified if it's just Google login.
-      // Actually, Google login usually provides verified emails. Let's enforce it to be safe.
-      return request.auth.token.email_verified == true;
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    // Validation Helpers
-    function isValidUserProfile(data) {
-      return data.email is string && data.email.size() <= 256
-        && data.createdAt is timestamp
-        && data.updatedAt is timestamp
-        && (
-          !('prayerAlertsEnabled' in data) ||
-          data.prayerAlertsEnabled is bool
-        )
-        && (
-          !('totalTasbihCount' in data) ||
-          data.totalTasbihCount is number
-        )
-        && (
-          !('customDhikrList' in data) ||
-          data.customDhikrList is list
-        );
-    }
-
-    // Users Collection
     match /users/{userId} {
-      allow read: if isSignedIn() && request.auth.uid == userId;
-
-      allow create: if isSignedIn() 
-        && isValidId(userId)
-        && request.auth.uid == userId
-        && incoming().keys().hasAll(['email', 'createdAt', 'updatedAt'])
-        && incoming().keys().size() >= 3
-        && incoming().email == request.auth.token.email
-        && isValidUserProfile(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
-
-      allow update: if isSignedIn() 
-        && request.auth.uid == userId
-        && (
-          // Action: Profile Update (e.g. settings)
-          incoming().updatedAt == request.time &&
-          incoming().createdAt == existing().createdAt &&
-          incoming().email == existing().email &&
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'prayerAlertsEnabled', 
-            'totalTasbihCount', 
-            'updatedAt',
-            'customDhikrList'
-          ])
-        );
-
-      allow delete: if false;
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-
-    match /users/{userId}/listeningHistory/{historyId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
-    }
-
-    match /users/{userId}/dhikrHistory/{historyId} {
-      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    match /azkar/{document} {
+      allow read: if true;
+      allow write: if request.auth != null;
     }
   }
 }
